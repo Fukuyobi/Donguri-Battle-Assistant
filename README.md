@@ -16,7 +16,7 @@
 ## インストール方法
 
 1. 「Tampermonkey」などのユーザースクリプト管理アドオンをブラウザにインストールします。
-2. スクリプトファイル「Donguri_Bag_Enhancer.user.js」をTampermonkeyに読み込ませます。
+2. スクリプトファイル「Donguri_Battle_Assistant.user.js」をTampermonkeyに読み込ませます。
 3. どんぐりアリーナやチームバトルのページにアクセスすると、自動的にスクリプトが適用されます。
 
 ## 更新履歴
