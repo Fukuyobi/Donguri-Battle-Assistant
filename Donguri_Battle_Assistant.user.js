@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      7.0.6.0
+// @version      9.0.2.2
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '7.0.6.0';
+  const DBA_VERSION = '9.0.2.2';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -456,6 +456,21 @@
     return /teambattle|teamchallenge|avatar|battle|map|fow/i.test(u);
   }
 
+  function dbaIsRbLiveMapStaticUrl(url){
+    try{
+      const raw = String(url || '');
+      if(!raw) return false;
+      const u = new URL(raw, location.href);
+      return (
+        mode === 'rb' &&
+        u.origin === location.origin &&
+        u.pathname === '/map/rb/static'
+      );
+    }catch(_e){
+      return false;
+    }
+  }
+
   function dbaProbeRuntimeCurrentCell(reason){
     if(!isRtCoordDebugEnabled()) return;
     if(mode !== 'rb') return;
@@ -663,6 +678,17 @@
               : (typeof req0 === 'string'
                   ? req0
                   : ((req0 && typeof req0.url === 'string') ? req0.url : ''));
+
+            if(dbaIsRbLiveMapStaticUrl(reqUrl) && resp && typeof resp.clone === 'function'){
+              resp.clone().json().then((payload) => {
+                try{
+                  handleRbLiveMapPayloadFromOfficial(
+                    payload,
+                    'fetch:/map/rb/static'
+                  );
+                }catch(_e){}
+              }).catch(() => {});
+            }
 
             if(dbaShouldInspectDebugUrl(reqUrl) && resp && typeof resp.clone === 'function'){
               resp.clone().text().then((text) => {
@@ -1541,6 +1567,18 @@
     #dba-top-progress-sync-now[disabled] {
       opacity: 0.6;
       cursor: not-allowed;
+    }
+    /* 「Reset」ボタン */
+    #dba-top-progress-reset-sync,
+    #dba-arena-top-progress-reset-sync {
+      margin-left: 0;
+      flex: 0 0 auto;
+    }
+    #dba-top-progress-reset-sync[disabled],
+    #dba-arena-top-progress-reset-sync[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+      filter: grayscale(1);
     }
     /* プログレスバー */
     #dba-top-progress .dba-top-progress__matchBar {
@@ -3202,7 +3240,7 @@
     .dba-pick-filterbtn--ssr { background:#a633d6; color:#fff; }
     .dba-pick-filterbtn--ur { background:#f45d01; color:#fff; }
 
-    /* ===== アイテム選択：MOD 0 フィルタ ===== */
+    /* ===== アイテム選択：チェックボックス型フィルタ ===== */
     .dba-pick-filterchk {
       display: inline-flex;
       gap: 8px;
@@ -3859,6 +3897,7 @@
   // =========================
   const DBA_LP_GAUGE = {
     raf: 0,
+    seq: 0,
     t0: 0,
     dur: 0,
     on: false,
@@ -3915,6 +3954,7 @@
   }
 
   function longPressGaugeCancel(){
+    DBA_LP_GAUGE.seq += 1;
     if(DBA_LP_GAUGE.raf){
       cancelAnimationFrame(DBA_LP_GAUGE.raf);
       DBA_LP_GAUGE.raf = 0;
@@ -3937,6 +3977,8 @@
     longPressGaugeCancel();
 
     DBA_LP_GAUGE.on = true;
+    DBA_LP_GAUGE.seq += 1;
+    const seq = DBA_LP_GAUGE.seq;
     DBA_LP_GAUGE.t0 = performance.now();
     DBA_LP_GAUGE.dur = Math.max(1, Number(durationMs || 1));
     DBA_LP_GAUGE.lastXY = { x: Number(x || 0), y: Number(y || 0) };
@@ -3946,6 +3988,7 @@
     drawLongPressGaugeProgress(0);
 
     const tick = () => {
+      if(seq !== DBA_LP_GAUGE.seq) return;
       if(!DBA_LP_GAUGE.on) return;
       const now = performance.now();
       const p = (now - DBA_LP_GAUGE.t0) / DBA_LP_GAUGE.dur;
@@ -3961,6 +4004,7 @@
 
   function longPressGaugeComplete(){
     // 長押し成立：全周グリーン → すぐ消える
+    DBA_LP_GAUGE.seq += 1;
     if(DBA_LP_GAUGE.raf){
       cancelAnimationFrame(DBA_LP_GAUGE.raf);
       DBA_LP_GAUGE.raf = 0;
@@ -4180,11 +4224,13 @@
 
   // トップページ「経過時間」プログレス（同期用）
   const LS_TOP_ELAPSED_PROGRESS_KEY = 'dba.topElapsedProgress.v1';
+  const LS_TOP_PROGRESS_RESET_UNLOCK_AT_KEY = 'dba.topElapsedProgress.resetUnlockAt.v1';
   const DBA_TOP_PROGRESS_CYCLE_MS = 60 * 60 * 1000; // 1サイクル=約1時間（ユーザー説明に基づく）
   const LS_TOP_SYNCINFO_SHOW_KEY = 'dba.topElapsedProgress.showInfo.v1'; // 0/1
   const LS_SHOW_ORIGINAL_HEADER_KEY = 'dba.showOriginalHeader.v1'; // 0/1
   const LS_SHOW_LIGHT_REFRESH_BUTTON_KEY = 'dba.showLightRefreshButton.v1'; // 0/1
   const LS_PICK_HIDE_MOD0_PREFIX = 'dba.pick.hideModZero.v1.'; // weapon / armor / necklace
+  const LS_PICK_HIDE_LEGACY_PREFIX = 'dba.pick.hideLegacy.v1.'; // weapon / armor
 
   function makePickHideModZeroKey(kind){
     const k = (kind === 'weapon' || kind === 'armor' || kind === 'necklace') ? kind : 'unknown';
@@ -4204,6 +4250,29 @@
   function savePickHideModZero(kind, on){
     try{
       dbaStorageSetItem(makePickHideModZeroKey(kind), on ? '1' : '0');
+    }catch(_e){}
+  }
+
+  function makePickHideLegacyKey(kind){
+    const k = (kind === 'weapon' || kind === 'armor') ? kind : 'unknown';
+    return `${LS_PICK_HIDE_LEGACY_PREFIX}${k}`;
+  }
+
+  function loadPickHideLegacy(kind){
+    try{
+      if(kind !== 'weapon' && kind !== 'armor') return false;
+      const raw = dbaStorageGetItem(makePickHideLegacyKey(kind));
+      if(raw == null) return false; // デフォルトOFF
+      return raw === '1';
+    }catch(_e){
+      return false;
+    }
+  }
+
+  function savePickHideLegacy(kind, on){
+    try{
+      if(kind !== 'weapon' && kind !== 'armor') return;
+      dbaStorageSetItem(makePickHideLegacyKey(kind), on ? '1' : '0');
     }catch(_e){}
   }
 
@@ -4349,6 +4418,145 @@
       };
       dbaStorageSetItem(LS_TOP_ELAPSED_PROGRESS_KEY, JSON.stringify(obj));
     }catch(_e){}
+  }
+
+  function loadTopProgressResetUnlockAt(){
+    try{
+      const raw = dbaStorageGetItem(LS_TOP_PROGRESS_RESET_UNLOCK_AT_KEY);
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, n) : 0;
+    }catch(_e){
+      return 0;
+    }
+  }
+
+  function saveTopProgressResetUnlockAt(unlockAt){
+    try{
+      const n = Number(unlockAt);
+      if(Number.isFinite(n) && n > Date.now()){
+        dbaStorageSetItem(LS_TOP_PROGRESS_RESET_UNLOCK_AT_KEY, String(Math.floor(n)));
+      }else{
+        dbaStorageRemoveItem(LS_TOP_PROGRESS_RESET_UNLOCK_AT_KEY);
+      }
+    }catch(_e){}
+  }
+
+  function isTopProgressResetLocked(now){
+    const currentNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const unlockAt = loadTopProgressResetUnlockAt();
+    if(!(unlockAt > currentNow)){
+      if(unlockAt > 0){
+        saveTopProgressResetUnlockAt(0);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  const DBA_TOP_PROGRESS_RESET_STATE = {
+    unlockTimer: 0,
+    lastDisabled: null
+  };
+
+  function scheduleTopProgressResetUnlockCheck(){
+    if(DBA_TOP_PROGRESS_RESET_STATE.unlockTimer){
+      clearTimeout(DBA_TOP_PROGRESS_RESET_STATE.unlockTimer);
+      DBA_TOP_PROGRESS_RESET_STATE.unlockTimer = 0;
+    }
+
+    const now = Date.now();
+    const unlockAt = loadTopProgressResetUnlockAt();
+    if(!(unlockAt > now)){
+      updateTopProgressResetButtons();
+      return;
+    }
+
+    const delayMs = Math.max(0, unlockAt - now);
+    DBA_TOP_PROGRESS_RESET_STATE.unlockTimer = window.setTimeout(() => {
+      DBA_TOP_PROGRESS_RESET_STATE.unlockTimer = 0;
+      if(!isTopProgressResetLocked(Date.now())){
+        updateTopProgressResetButtons(true);
+      }else{
+        scheduleTopProgressResetUnlockCheck();
+      }
+    }, delayMs);
+  }
+
+  function updateTopProgressResetButtons(force){
+    const locked = isTopProgressResetLocked(Date.now());
+    if(!force && DBA_TOP_PROGRESS_RESET_STATE.lastDisabled === locked) return;
+    DBA_TOP_PROGRESS_RESET_STATE.lastDisabled = locked;
+
+    const buttons = [
+      document.getElementById('dba-top-progress-reset-sync'),
+      document.getElementById('dba-arena-top-progress-reset-sync')
+    ];
+
+    for(const btn of buttons){
+      if(!btn) continue;
+      btn.disabled = locked;
+      btn.title = locked
+        ? '60秒後に再び使用できます。'
+        : '保持している同期データを破棄して、同期を最初から取り直します。';
+    }
+  }
+
+  function clearTopElapsedProgressSyncDataForReset(){
+    try{ dbaStorageRemoveItem(LS_TOP_ELAPSED_PROGRESS_KEY); }catch(_e){}
+    try{ resetMatchProgressAnchor(); }catch(_e){}
+    try{ resetMatchSyncPlan(); }catch(_e){}
+
+    try{
+      DBA_TOP_PROGRESS_AUTOSYNC.doneAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.activeReason = '';
+      DBA_TOP_PROGRESS_AUTOSYNC.lastManualAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.lastAutoAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.lastRejectedAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.lastResumeAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.hiddenAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.lastSyncingLabelAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.syncingLabelVisibleUntil = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.failCount = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.nextRetryAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.startupSyncStartedAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.startupSyncFinishedAt = 0;
+      DBA_TOP_PROGRESS_AUTOSYNC.startupSyncHardStopped = false;
+    }catch(_e){}
+
+    try{
+      DBA_TOP_PROGRESS_RENDER_CACHE.termPct = null;
+      DBA_TOP_PROGRESS_RENDER_CACHE.matchLabel = '';
+      DBA_TOP_PROGRESS_RENDER_CACHE.matchTime = '';
+      DBA_TOP_PROGRESS_RENDER_CACHE.matchPct = null;
+      DBA_TOP_PROGRESS_RENDER_CACHE.termTitle = '';
+      DBA_TOP_PROGRESS_RENDER_CACHE.syncDisabled = null;
+      DBA_TOP_PROGRESS_RENDER_CACHE.syncText = '';
+    }catch(_e){}
+  }
+
+  async function resetTopElapsedProgressAndResync(){
+    if(isTopProgressResetLocked(Date.now())) return false;
+
+    // 「60秒間のsetTimeout」ではなく、解除予定の絶対時刻を保存してから予約する。
+    saveTopProgressResetUnlockAt(Date.now() + 60000);
+    updateTopProgressResetButtons(true);
+    scheduleTopProgressResetUnlockCheck();
+
+    clearTopElapsedProgressSyncDataForReset();
+
+    try{ renderTopProgress(); }catch(_e){}
+    try{ renderArenaTermProgress(); }catch(_e){}
+
+    if(DBA_TOP_PROGRESS_AUTOSYNC.inFlight) return false;
+
+    try{
+      return await fetchTopElapsedProgressFromTopPageOnce('manual');
+    }catch(_e){
+      return false;
+    }finally{
+      try{ renderTopProgress(); }catch(_e){}
+      try{ renderArenaTermProgress(); }catch(_e){}
+    }
   }
 
   function estimateTopElapsedProgressPct(){
@@ -5162,7 +5370,7 @@
     metaRow.appendChild(metaMatch);
     metaRow.appendChild(metaTime);
 
-    // 「今すぐ同期」ボタン
+    // 「今すぐ同期」ボタン（RedBlue）
     const btnSync = document.createElement('button');
     btnSync.type = 'button';
     btnSync.id = 'dba-top-progress-sync-now';
@@ -5173,6 +5381,18 @@
       e.stopPropagation();
       if(DBA_TOP_PROGRESS_AUTOSYNC.inFlight) return;
       fetchTopElapsedProgressFromTopPageOnce('manual').catch(()=>{});
+    });
+
+    // 「Reset」ボタン：保持している同期データを破棄して同期を取り直す（RedBlue）
+    const btnReset = document.createElement('button');
+    btnReset.type = 'button';
+    btnReset.id = 'dba-top-progress-reset-sync';
+    btnReset.className = 'dba-btn-progress-mini';
+    btnReset.textContent = 'Reset';
+    btnReset.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetTopElapsedProgressAndResync().catch(()=>{});
     });
 
     const barRow = document.createElement('div');
@@ -5190,19 +5410,25 @@
 
     bindFnButtonTooltip(
       bar,
-      '「同期」ボタンで同期を取ると良いタイミング\n' +
-      '・プログレスバーが100％になる前に、次の試合が始まった時。\n' +
-      '・しばらく放置した後や、別タブや別アプリから戻った時。\n' +
+      '💡「同期」ボタンの目安\n' +
+      '・プログレスバーの進みが少し早い／遅い時。\n' +
+      '・放置した後や、別タブや別アプリから戻った時。\n' +
       '・通信が不安定になり、その後に回復した時。\n' +
-      '・プログレスバーが動かない等の異常時。',
+      '💡「Reset」ボタンの目安\n' +
+      '・10分以上経過しても同期が取れない時。\n' +
+      '・プログレスバーが止まっている等の異常時。',
       'below'
     );
 
     barRow.appendChild(bar);
     barRow.appendChild(btnSync);
+    barRow.appendChild(btnReset);
 
     wrap.appendChild(metaRow);
     wrap.appendChild(barRow);
+
+    updateTopProgressResetButtons(true);
+    scheduleTopProgressResetUnlockCheck();
 
     bindTopProgressPopup(bar);
     ensureTopProgressPopup();
@@ -5320,7 +5546,9 @@
     // 「同期」ボタン状態
     if(btnSync){
       const inflight = !!DBA_TOP_PROGRESS_AUTOSYNC.inFlight;
-      const syncText = inflight ? '同期中…' : '同期';
+      const currentNow = Date.now();
+      const syncingLabelVisible = shouldShowTopProgressSyncingLabel(currentNow);
+      const syncText = syncingLabelVisible ? '同期中…' : '同期';
       if(DBA_TOP_PROGRESS_RENDER_CACHE.syncDisabled !== inflight){
         DBA_TOP_PROGRESS_RENDER_CACHE.syncDisabled = inflight;
         btnSync.disabled = inflight;
@@ -5331,6 +5559,9 @@
         needsHeightSync = true;
       }
     }
+
+    // 「Reset」ボタン状態
+    updateTopProgressResetButtons();
 
     // レイアウトに影響する更新があった時だけ fnbar 高さを再同期
     if(needsHeightSync){
@@ -5345,7 +5576,7 @@
   // 方針：
   //  - 通常時はローカル時計で進める
   //  - ブラウザ起動直後などの初回自動同期は、試合時間を圧迫しないよう短時間で打ち切る
-  //  - 初回自動同期は15秒程度を目標、30秒を上限として、粗い推定でも通常操作へ戻す
+  //  - 初回自動同期は20秒程度を目標、30秒を上限として、粗い推定でも通常操作へ戻す
   //  - 通常の自動同期は「試合境界の前後」ではなく、各試合内の予定地点だけ行う
   //  - ただし、長時間未同期の時だけ低頻度の保険的な同期を行う
   //  - タブ復帰 / ページ復帰後、一定時間以上止まっていたら再同期候補を取る
@@ -5361,10 +5592,14 @@
   const DBA_TOP_PROGRESS_SYNC_ACCEPT_SEC_LATE = 45;               // 終盤同期の許容ズレ
   const DBA_BATTLEINFO_RB_BOUNDARY_RETRY_WINDOW_SEC = 45;         // RBの「戦況情報」クリック時、境界直後の旧マップ掴みを再確認する範囲
   const DBA_BATTLEINFO_RB_BOUNDARY_RETRY_DELAYS_MS = [1500, 2500, 3500, 4500, 5500, 6500, 7500]; // 合計31.5秒
-  const DBA_TOP_PROGRESS_STARTUP_SYNC_TARGET_MS = 15 * 1000;      // 起動直後の自動同期はできれば15秒程度で終える
+  const DBA_RB_LIVE_MAP_FAST_FETCH_TIMEOUT_MS = 3500;            // RB戦況更新用：軽量JSON取得の単発タイムアウト
+  const DBA_RB_CELL_DETAIL_CACHE_MAX_ENTRIES = 3000;              // RB長押し戦況情報：セル詳細表示キャッシュの最大件数
+  const DBA_RB_CELL_DETAIL_CACHE_MAX_AGE_MS = 10 * 60 * 1000;     // RB長押し戦況情報：セル詳細表示キャッシュの有効期間
+  const DBA_TOP_PROGRESS_STARTUP_SYNC_TARGET_MS = 20 * 1000;      // 起動直後の自動同期は20秒程度で終える
   const DBA_TOP_PROGRESS_STARTUP_SYNC_HARD_LIMIT_MS = 30 * 1000;  // 起動直後の自動同期は長くても30秒で打ち切る
   const DBA_TOP_PROGRESS_AUTO_FETCH_TIMEOUT_MS = 12 * 1000;       // 自動同期fetchの単発タイムアウト
   const DBA_TOP_PROGRESS_MANUAL_FETCH_TIMEOUT_MS = 25 * 1000;     // 手動同期fetchの単発タイムアウト
+  const DBA_TOP_PROGRESS_SYNCING_LABEL_THROTTLE_MS = 5 * 1000;    // 自動同期の「同期中…」表示は頻回点滅を避ける
   const DBA_TOP_PROGRESS_RECENT_SYNC_SUPPRESS_MS = 90 * 1000;     // 直近同期後の自動同期抑止
   const DBA_TOP_PROGRESS_RESUME_SYNC_MIN_PAUSE_MS = 45 * 1000;    // 復帰イベントとして記録する最小停止時間
   const DBA_TOP_PROGRESS_RESUME_SYNC_COOLDOWN_MS = 90 * 1000;     // 復帰イベント記録の連発抑止
@@ -5382,12 +5617,15 @@
   const DBA_TOP_PROGRESS_AUTOSYNC = {
     inFlight: false,
     doneAt: 0,
+    activeReason: '',
     lastManualAt: 0,
     lastAutoAt: 0, // 最終補正（自動）専用
     lastRejectedAt: 0,
     lastResumeAt: 0,
     hiddenAt: 0,
     lastTickAt: 0,
+    lastSyncingLabelAt: 0,
+    syncingLabelVisibleUntil: 0,
     failCount: 0,
     nextRetryAt: 0,
     startupSyncStartedAt: 0,
@@ -5521,6 +5759,40 @@
     return true;
   }
 
+  function beginTopProgressSyncingLabel(reason, now){
+    const currentNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const rs = String(reason || '');
+
+    DBA_TOP_PROGRESS_AUTOSYNC.activeReason = rs;
+
+    // 手動同期はユーザー操作への反応なので必ず表示する
+    if(rs === 'manual'){
+      DBA_TOP_PROGRESS_AUTOSYNC.lastSyncingLabelAt = currentNow;
+      DBA_TOP_PROGRESS_AUTOSYNC.syncingLabelVisibleUntil = currentNow + DBA_TOP_PROGRESS_MANUAL_FETCH_TIMEOUT_MS;
+      return true;
+    }
+
+    // 自動同期は短時間に連発した場合の点滅を避け、5秒に1回程度へ間引く
+    const lastShownAt = Number(DBA_TOP_PROGRESS_AUTOSYNC.lastSyncingLabelAt || 0);
+    if(!(lastShownAt > 0) || (currentNow - lastShownAt) >= DBA_TOP_PROGRESS_SYNCING_LABEL_THROTTLE_MS){
+      DBA_TOP_PROGRESS_AUTOSYNC.lastSyncingLabelAt = currentNow;
+      DBA_TOP_PROGRESS_AUTOSYNC.syncingLabelVisibleUntil = currentNow + DBA_TOP_PROGRESS_SYNCING_LABEL_THROTTLE_MS;
+      return true;
+    }
+
+    return false;
+  }
+
+  function shouldShowTopProgressSyncingLabel(now){
+    if(!DBA_TOP_PROGRESS_AUTOSYNC.inFlight) return false;
+
+    const currentNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const rs = String(DBA_TOP_PROGRESS_AUTOSYNC.activeReason || '');
+
+    if(rs === 'manual') return true;
+    return currentNow <= Number(DBA_TOP_PROGRESS_AUTOSYNC.syncingLabelVisibleUntil || 0);
+  }
+
   function finishTopProgressStartupSyncAttempt(reason, accepted){
     const rs = String(reason || '');
     if(!isStartupTopProgressAutoSyncReason(rs)) return;
@@ -5534,10 +5806,14 @@
     if(
       accepted ||
       rs === 'unsynced' ||
+      rs === 'start-switch' ||
       elapsedMs >= DBA_TOP_PROGRESS_STARTUP_SYNC_TARGET_MS ||
       elapsedMs >= DBA_TOP_PROGRESS_STARTUP_SYNC_HARD_LIMIT_MS
     ){
       DBA_TOP_PROGRESS_AUTOSYNC.startupSyncFinishedAt = currentNow;
+      if(!loadTopElapsedProgress()){
+        seedApproxTopProgressFromLocalClock(`startup-finished-approx:${rs}`);
+      }
       if(elapsedMs >= DBA_TOP_PROGRESS_STARTUP_SYNC_HARD_LIMIT_MS){
         DBA_TOP_PROGRESS_AUTOSYNC.startupSyncHardStopped = true;
         seedApproxTopProgressFromLocalClock(`startup-finished-hard:${rs}`);
@@ -5801,6 +6077,38 @@
     }
   }
 
+  function markMatchSyncAttemptConsumed(reason, now){
+    const currentNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    DBA_MATCH_SYNC_PLAN.lastSyncReason = String(reason || '');
+    DBA_MATCH_SYNC_PLAN.pendingResumeEventAt = 0;
+
+    const rs = String(reason || '');
+    if(!rs || rs === 'manual' || rs === 'unsynced') return;
+
+    if(rs === 'start-switch'){
+      DBA_MATCH_SYNC_PLAN.startDone = true;
+      return;
+    }
+    if(rs === 'rb-late'){
+      DBA_MATCH_SYNC_PLAN.lateDone = true;
+      return;
+    }
+    if(rs === 'rb-rescue'){
+      DBA_MATCH_SYNC_PLAN.rescueDone = true;
+      return;
+    }
+    if(rs === 'hc-mid' || rs === 'l-mid'){
+      DBA_MATCH_SYNC_PLAN.midDone = true;
+      return;
+    }
+    if(rs === 'hc-late-rescue' || rs === 'l-late-rescue'){
+      DBA_MATCH_SYNC_PLAN.lateDone = true;
+      return;
+    }
+
+    void currentNow;
+  }
+
   function markMatchSyncFailure(reason){
     const rs = String(reason || '');
     if(!rs || rs === 'manual' || rs === 'unsynced') return;
@@ -5975,7 +6283,7 @@
 
     const now = Date.now();
     const isManual = (String(reason || '') === 'manual');
-        if(!shouldAllowTopProgressAutoSyncAttempt(reason, now)){
+    if(!shouldAllowTopProgressAutoSyncAttempt(reason, now)){
       return false;
     }
     if(!isManual && now < Number(DBA_TOP_PROGRESS_AUTOSYNC.nextRetryAt || 0)){
@@ -5983,6 +6291,7 @@
     }
 
     DBA_TOP_PROGRESS_AUTOSYNC.inFlight = true;
+    beginTopProgressSyncingLabel(reason, now);
     let timeoutId = 0;
     let accepted = false;
     try{
@@ -6036,6 +6345,7 @@
         }
         DBA_TOP_PROGRESS_AUTOSYNC.lastRejectedAt = Date.now();
         markMatchSyncFailure(reason);
+        markMatchSyncAttemptConsumed(reason, Date.now());
         try{ renderTopProgress(); }catch(_e){}
         return false;
       }
@@ -6068,12 +6378,15 @@
       DBA_TOP_PROGRESS_AUTOSYNC.failCount = failCount;
       const retryMs = Math.min(60000, 5000 * failCount);
       DBA_TOP_PROGRESS_AUTOSYNC.nextRetryAt = Date.now() + retryMs;
+      markMatchSyncFailure(reason);
+      markMatchSyncAttemptConsumed(reason, Date.now());
       return false;
     }finally{
       if(timeoutId){
         try{ clearTimeout(timeoutId); }catch(_e){}
       }
       DBA_TOP_PROGRESS_AUTOSYNC.inFlight = false;
+      DBA_TOP_PROGRESS_AUTOSYNC.activeReason = '';
       if(!isManual){
         finishTopProgressStartupSyncAttempt(reason, accepted);
       }
@@ -6318,6 +6631,8 @@
     }
   }
 
+    updateTopProgressResetButtons();
+
   let DBA_ARENA_TERM_PROGRESS_TID = 0;
   function startArenaTermProgressTicker(){
     if(DBA_ARENA_TERM_PROGRESS_TID) return;
@@ -6352,6 +6667,7 @@
     termInner.textContent = '0%';
     termBar.appendChild(termInner);
 
+    // 「同期」ボタン（アリーナ）
     const btnSync = document.createElement('button');
     btnSync.type = 'button';
     btnSync.id = 'dba-arena-top-progress-sync-now';
@@ -6373,8 +6689,25 @@
       }
     });
 
+    // 「Reset」ボタン：保持している同期データを破棄して同期を取り直す（アリーナ）
+    const btnReset = document.createElement('button');
+    btnReset.type = 'button';
+    btnReset.id = 'dba-arena-top-progress-reset-sync';
+    btnReset.className = 'dba-btn-progress-mini';
+    btnReset.textContent = 'Reset';
+    btnReset.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await resetTopElapsedProgressAndResync();
+      renderArenaTermProgress();
+    });
+
     row2.appendChild(termBar);
     row2.appendChild(btnSync);
+    row2.appendChild(btnReset);
+
+    updateTopProgressResetButtons(true);
+    scheduleTopProgressResetUnlockCheck();
 
     const row3 = document.createElement('div');
     row3.className = 'dba-arena-util__btnRow';
@@ -7780,9 +8113,16 @@
     pending: false
   };
 
+  // 「/teamchallenge」後に優先同期するセル数の上限
+  const DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT = 4;
+
   const DBA_POST_TEAMCHALLENGE_SYNC = {
     running: false,
-    pending: false
+    pending: false,
+    timer: 0,
+    seq: 0,
+    lastKind: 'map',
+    latestTargets: []
   };
 
   async function fetchLatestTopPageDoc(){
@@ -7824,10 +8164,10 @@
     return !!s?.postBattle?.autoDiffSync;
   }
 
-  function scheduleTeamChallengeAutoSyncFromResultText(resultText){
+  function scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets){
     if(!shouldScheduleTeamChallengeAutoSync()) return false;
 
-    scheduleAutoBattleInfoSyncAfterBattleResult().catch(()=>{});
+    scheduleAutoBattleInfoSyncAfterBattleResult(priorityTargets).catch(()=>{});
 
     // 「戦闘ログ」本文を検出した場合も、ここで追加の差分同期を積まない。
     // autoSyncMode=diff では scheduleAutoBattleInfoSyncAfterBattleResult() が差分同期を担当し、
@@ -7862,46 +8202,257 @@
     return false;
   }
 
-  async function scheduleBattleInfoSyncAfterTeamChallenge(){
-    const btn = document.getElementById('dba-btn-battleinfo');
-    if(!btn) return false;
-    if(!findCurrentBattlemapRoot()) return false;
+  function sanitizePostTeamChallengeSyncKind(kind){
+    const s = String(kind || '').trim().toLowerCase();
+    return (s === 'diff') ? 'diff' : 'map';
+  }
 
+  function normalizePostTeamChallengeTarget(target){
+    if(!target || typeof target !== 'object') return null;
+    const row = Number(target.row ?? target.r);
+    const col = Number(target.col ?? target.c);
+    if(!Number.isFinite(row) || !Number.isFinite(col)) return null;
+    if(row < 0 || col < 0) return null;
+    return {
+      row: Math.floor(row),
+      col: Math.floor(col),
+      source: String(target.source || 'teamchallenge'),
+      at: Number.isFinite(Number(target.at)) ? Number(target.at) : Date.now()
+    };
+  }
+
+  function normalizePostTeamChallengeTargets(targets){
+    const src = Array.isArray(targets) ? targets : [targets];
+    const out = [];
+    const seen = new Set();
+
+    for(const item of src){
+      const t = normalizePostTeamChallengeTarget(item);
+      if(!t) continue;
+      const key = `${t.row},${t.col}`;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      out.push(t);
+      if(out.length >= DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT) break;
+    }
+
+    return out;
+  }
+
+  function rememberLatestPostTeamChallengeTarget(row, col, source){
+    const target = normalizePostTeamChallengeTarget({
+      row,
+      col,
+      source: source || 'teamchallenge',
+      at: Date.now()
+    });
+    if(!target) return null;
+
+    const key = `${target.row},${target.col}`;
+    const list = normalizePostTeamChallengeTargets(DBA_POST_TEAMCHALLENGE_SYNC.latestTargets)
+      .filter((item) => `${item.row},${item.col}` !== key);
+
+    // 古いものから並ぶ配列として保持し、同じセルを再クリックした場合は最新扱いで末尾へ移動する。
+    list.push(target);
+    while(list.length > DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT){
+      list.shift();
+    }
+
+    DBA_POST_TEAMCHALLENGE_SYNC.latestTargets = list;
+    DBA_POST_TEAMCHALLENGE_SYNC.seq += 1;
+    return getLatestPostTeamChallengeTargets();
+  }
+
+  function getLatestPostTeamChallengeTargets(){
+    return normalizePostTeamChallengeTargets(DBA_POST_TEAMCHALLENGE_SYNC.latestTargets);
+  }
+
+  function resolvePostTeamChallengePriorityTargets(targets){
+    const normalized = normalizePostTeamChallengeTargets(targets);
+    return normalized.length > 0 ? normalized : getLatestPostTeamChallengeTargets();
+  }
+
+  function isPostTeamChallengeTargetWithinSnapshot(target, snapshot){
+    const t = normalizePostTeamChallengeTarget(target);
+    if(!t || !snapshot) return false;
+    const rows = Number(snapshot.rows);
+    const cols = Number(snapshot.cols);
+    if(!Number.isFinite(rows) || !Number.isFinite(cols)) return false;
+    if(rows <= 0 || cols <= 0) return false;
+    return t.row >= 0 && t.col >= 0 && t.row < rows && t.col < cols;
+  }
+
+  function buildPriorityDetailFetchJobs(detailJobs, priorityTargets, snapshot){
+    const out = [];
+    const seen = new Set();
+    const push = (row, col) => {
+      const r = Number(row);
+      const c = Number(col);
+      if(!Number.isFinite(r) || !Number.isFinite(c)) return;
+      const key = `${Math.floor(r)},${Math.floor(c)}`;
+      if(seen.has(key)) return;
+      seen.add(key);
+      out.push({ row: Math.floor(r), col: Math.floor(c) });
+    };
+
+    const targets = normalizePostTeamChallengeTargets(priorityTargets);
+    // 保持は「古い→新しい」順。詳細取得は「新しい→古い」順で先頭へ差し込む。
+    for(const target of targets.slice().reverse()){
+      if(target && isPostTeamChallengeTargetWithinSnapshot(target, snapshot)){
+        // 最新クリック対象群は、差分の有無にかかわらず先頭で詳細取得する。
+        // 連打時の体感では「最後に触った近辺」の反映が重要。
+        push(target.row, target.col);
+      }
+    }
+
+    for(const job of (Array.isArray(detailJobs) ? detailJobs : [])){
+      if(!job) continue;
+      push(job.row, job.col);
+    }
+
+    return out;
+  }
+
+  function getPostTeamChallengeSyncDelayMs(){
+    // RBは1試合が短く、操作テンポも速いため短め。
+    // ただし0ms連続実行は避け、/teamchallenge後のDOM反映・レイヤー同期をまとめる。
+    return mode === 'rb' ? 450 : 650;
+  }
+
+  function requestPostTeamChallengeSync(kind, targets){
+    const syncKind = sanitizePostTeamChallengeSyncKind(kind);
+    const syncTargets = normalizePostTeamChallengeTargets(targets);
+    const btn = document.getElementById('dba-btn-battleinfo');
+    if(!btn) return Promise.resolve(false);
+    if(!findCurrentBattlemapRoot()) return Promise.resolve(false);
+
+    DBA_POST_TEAMCHALLENGE_SYNC.lastKind = syncKind;
+    if(syncTargets.length > 0){
+      DBA_POST_TEAMCHALLENGE_SYNC.latestTargets = syncTargets;
+    }
+    DBA_POST_TEAMCHALLENGE_SYNC.seq += 1;
+
+    if(DBA_POST_TEAMCHALLENGE_SYNC.timer){
+      clearTimeout(DBA_POST_TEAMCHALLENGE_SYNC.timer);
+      DBA_POST_TEAMCHALLENGE_SYNC.timer = 0;
+    }
+
+    if(DBA_POST_TEAMCHALLENGE_SYNC.running){
+      DBA_POST_TEAMCHALLENGE_SYNC.pending = true;
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+      const delayMs = getPostTeamChallengeSyncDelayMs();
+      DBA_POST_TEAMCHALLENGE_SYNC.timer = setTimeout(() => {
+        DBA_POST_TEAMCHALLENGE_SYNC.timer = 0;
+        runLatestPostTeamChallengeSync()
+          .then(resolve)
+          .catch(() => resolve(false));
+      }, delayMs);
+    });
+  }
+
+  async function runLatestPostTeamChallengeSync(){
     if(DBA_POST_TEAMCHALLENGE_SYNC.running){
       DBA_POST_TEAMCHALLENGE_SYNC.pending = true;
       return true;
     }
 
     DBA_POST_TEAMCHALLENGE_SYNC.running = true;
+    let ok = false;
+
     try{
-      do{
+      // 連打中に完全な無限ループへ入らないよう、1回の起動では最大4回まで。
+      // それ以上の追加要求は finally 側で、改めてデバウンスして最新1件だけ処理する。
+      for(let guard = 0; guard < 4; guard += 1){
         DBA_POST_TEAMCHALLENGE_SYNC.pending = false;
+        const startedSeq = DBA_POST_TEAMCHALLENGE_SYNC.seq;
+        const kind = sanitizePostTeamChallengeSyncKind(DBA_POST_TEAMCHALLENGE_SYNC.lastKind);
+        const targets = getLatestPostTeamChallengeTargets();
 
-        const { topUrl, doc } = await fetchLatestTopPageDoc();
-        const curSnap = getCurrentBattlemapSnapshot();
-        const newSnap = getBattlemapSnapshotFromDoc(doc);
-
-        if(shouldUseFullScanForFetchedTopDoc(curSnap, newSnap)){
-          await scanAllCellsAndRenderFromFetchedDoc(doc, {
-            topUrl,
-            snapshot: newSnap,
-            showAlertOnError: false
-          });
+        if(kind === 'diff'){
+          ok = await runBattleInfoSyncAfterTeamChallengeOnce(targets);
         }else{
-          await updateOnlyChangedCellsFromFetchedDoc(doc, {
-            topUrl,
-            snapshot: newSnap,
-            showAlertOnError: false
-          });
+          ok = await runBattlemapRefreshWithoutCellDetailsAfterTeamChallengeOnce(targets);
         }
-      }while(DBA_POST_TEAMCHALLENGE_SYNC.pending);
 
-      return true;
+        if(
+          !DBA_POST_TEAMCHALLENGE_SYNC.pending &&
+          DBA_POST_TEAMCHALLENGE_SYNC.seq === startedSeq
+        ){
+          return ok;
+        }
+
+        // 追加クリックが来ていても即再実行しない。
+        // 少し待ってから、その時点の最新状態だけを再取得する。
+        DBA_POST_TEAMCHALLENGE_SYNC.pending = false;
+        await sleepMs(getPostTeamChallengeSyncDelayMs());
+      }
+
+      return ok;
     }catch(_e){
       return false;
     }finally{
       DBA_POST_TEAMCHALLENGE_SYNC.running = false;
+
+      if(DBA_POST_TEAMCHALLENGE_SYNC.pending){
+        DBA_POST_TEAMCHALLENGE_SYNC.pending = false;
+        requestPostTeamChallengeSync(
+          DBA_POST_TEAMCHALLENGE_SYNC.lastKind,
+          getLatestPostTeamChallengeTargets()
+        ).catch(() => {});
+      }
     }
+  }
+
+  async function runBattleInfoSyncAfterTeamChallengeOnce(priorityTargets){
+    const btn = document.getElementById('dba-btn-battleinfo');
+    if(!btn) return false;
+    if(!findCurrentBattlemapRoot()) return false;
+
+    try{
+      if(mode === 'rb'){
+        const live = await fetchRbLiveMapSnapshotOnce('teamchallenge:battle-info-click');
+        if(live && live.snapshot){
+          await updateOnlyChangedCellsFromFetchedDoc(null, {
+            topUrl: '/map/rb/static',
+            snapshot: live.snapshot,
+            showAlertOnError: false,
+            preferLiveMapFastPath: true,
+            priorityTargets: normalizePostTeamChallengeTargets(priorityTargets)
+          });
+          return true;
+        }
+      }
+
+      const { topUrl, doc } = await fetchLatestTopPageDoc();
+      const curSnap = getCurrentBattlemapSnapshot();
+      const newSnap = getBattlemapSnapshotFromDoc(doc);
+
+      if(shouldUseFullScanForFetchedTopDoc(curSnap, newSnap)){
+        await scanAllCellsAndRenderFromFetchedDoc(doc, {
+          topUrl,
+          snapshot: newSnap,
+          showAlertOnError: false
+        });
+      }else{
+        await updateOnlyChangedCellsFromFetchedDoc(doc, {
+          topUrl,
+          snapshot: newSnap,
+          showAlertOnError: false,
+          priorityTargets: normalizePostTeamChallengeTargets(priorityTargets)
+        });
+      }
+
+      return true;
+    }catch(_e){
+      return false;
+    }
+  }
+
+  async function scheduleBattleInfoSyncAfterTeamChallenge(priorityTargets){
+    return requestPostTeamChallengeSync('diff', priorityTargets);
   }
 
   function hasBattleLogText(text){
@@ -7986,7 +8537,7 @@
     return true;
   }
 
-  async function scheduleAutoBattleInfoSyncAfterBattleResult(){
+  async function scheduleAutoBattleInfoSyncAfterBattleResult(priorityTargets){
     const s = loadSettings();
     if(!s?.postBattle?.autoDiffSync) return false;
 
@@ -7995,43 +8546,48 @@
     // 戦闘後の自動同期は /teamchallenge 後同期へ一本化する
     // （失敗ダイアログを出さない / 二重実行しにくくする）
     if(syncMode === 'diff'){
-      return scheduleBattleInfoSyncAfterTeamChallenge();
+      return scheduleBattleInfoSyncAfterTeamChallenge(priorityTargets);
     }
 
-    return scheduleBattlemapRefreshWithoutCellDetailsAfterTeamChallenge();
+    return scheduleBattlemapRefreshWithoutCellDetailsAfterTeamChallenge(priorityTargets);
   }
 
-  async function scheduleBattlemapRefreshWithoutCellDetailsAfterTeamChallenge(){
+  async function runBattlemapRefreshWithoutCellDetailsAfterTeamChallengeOnce(priorityTargets){
+    void priorityTargets;
     const btn = document.getElementById('dba-btn-battleinfo');
     if(!btn) return false;
     if(!findCurrentBattlemapRoot()) return false;
 
-    if(DBA_POST_TEAMCHALLENGE_SYNC.running){
-      DBA_POST_TEAMCHALLENGE_SYNC.pending = true;
-      return true;
-    }
-
-    DBA_POST_TEAMCHALLENGE_SYNC.running = true;
     try{
-      do{
-        DBA_POST_TEAMCHALLENGE_SYNC.pending = false;
+      if(mode === 'rb'){
+        const live = await fetchRbLiveMapSnapshotOnce('teamchallenge:map-only');
+        if(live && live.snapshot){
+          await refreshBattlemapWithoutCellDetailsFromFetchedDoc(null, {
+            topUrl: '/map/rb/static',
+            snapshot: live.snapshot,
+            showAlertOnError: false
+          });
+          return true;
+        }
+      }
 
-        const { topUrl, doc } = await fetchLatestTopPageDoc();
-        const newSnap = getBattlemapSnapshotFromDoc(doc);
+      const { topUrl, doc } = await fetchLatestTopPageDoc();
+      const newSnap = getBattlemapSnapshotFromDoc(doc);
 
-        await refreshBattlemapWithoutCellDetailsFromFetchedDoc(doc, {
-          topUrl,
-          snapshot: newSnap,
-          showAlertOnError: false
-        });
-      }while(DBA_POST_TEAMCHALLENGE_SYNC.pending);
+      await refreshBattlemapWithoutCellDetailsFromFetchedDoc(doc, {
+        topUrl,
+        snapshot: newSnap,
+        showAlertOnError: false
+      });
 
       return true;
     }catch(_e){
       return false;
-    }finally{
-      DBA_POST_TEAMCHALLENGE_SYNC.running = false;
     }
+  }
+
+  async function scheduleBattlemapRefreshWithoutCellDetailsAfterTeamChallenge(priorityTargets){
+    return requestPostTeamChallengeSync('map', priorityTargets);
   }
 
   async function scheduleBattleInfoDiffSyncAfterBattleLog(){
@@ -8052,6 +8608,20 @@
     try{
       do{
         DBA_POST_BATTLE_DIFF_SYNC.pending = false;
+
+        if(mode === 'rb'){
+          const live = await fetchRbLiveMapSnapshotOnce('battlelog:battle-info-click');
+          if(live && live.snapshot){
+            await updateOnlyChangedCellsFromFetchedDoc(null, {
+              topUrl: '/map/rb/static',
+              snapshot: live.snapshot,
+              showAlertOnError: false,
+              preferLiveMapFastPath: true
+            });
+            continue;
+          }
+        }
+
         const { topUrl, doc } = await fetchLatestTopPageDoc();
         const newSnap = getBattlemapSnapshotFromDoc(doc);
         await updateOnlyChangedCellsFromFetchedDoc(doc, {
@@ -8072,6 +8642,12 @@
     if(consumeOwnCapitalAttackIfNeeded(row, col)){
       return;
     }
+
+    const priorityTargets = rememberLatestPostTeamChallengeTarget(
+      row,
+      col,
+      'rapid-attack'
+    );
 
     // セル詳細を経由せず、teamchallenge に直接 POST
     // ※占領済み/空きセルの分岐はサーバー側が判断（＝「このエリアを捕らえよ」or「エリアに挑む」相当）
@@ -8098,7 +8674,7 @@
     if(!ct.includes('text/html')){
       const resultText = bodyText || '結果を表示できませんでした。';
       openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
-      scheduleTeamChallengeAutoSyncFromResultText(resultText);
+      scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
 
@@ -8108,13 +8684,13 @@
       const text = (doc.body && doc.body.innerText) ? doc.body.innerText : sanitizeText(block.textContent || '');
       const resultText = text || '結果を表示できませんでした。';
       openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
-      scheduleTeamChallengeAutoSyncFromResultText(resultText);
+      scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
     {
       const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
       openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
-      scheduleTeamChallengeAutoSyncFromResultText(resultText);
+      scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
     }
   }
 
@@ -8648,22 +9224,65 @@
     document.documentElement.style.setProperty('--dba-layer-text-opacity', v);
   }
 
-  function getRbGridSizeFromPageScript(){
-    // RBページの IIFE スクリプト内に "const GRID_SIZE = N;" がある想定
-    const scripts = Array.from(document.querySelectorAll('script'));
-    for(const sc of scripts){
-      const t = sc.textContent || '';
-      if(!t) continue;
-      if(t.includes('const GRID_SIZE') && t.includes('modeQS') && t.includes('&m=rb')){
-        const m = t.match(/const\s+GRID_SIZE\s*=\s*(\d+)\s*;/);
-        if(m) return Number(m[1]);
+  function getRbGridSizeFromPageScript(docLike){
+    // RBページの IIFE スクリプト内に "const GRID_SIZE = N;" がある想定。
+    // v9.0.0.0: 公式側のマップサイズ可変化が進んだため、
+    //             script → DBAスナップショット → canvas実寸 の順で安全にフォールバックする。
+    const doc = (docLike && typeof docLike.querySelectorAll === 'function') ? docLike : document;
+
+    const parseSizeFromText = (text) => {
+      const t = String(text || '');
+      if(!t || !t.includes('GRID_SIZE')) return null;
+      const m = t.match(/(?:const|let|var)\s+GRID_SIZE\s*=\s*(\d+)\s*;/);
+      if(!m) return null;
+      const n = Number(m[1]);
+      return (Number.isFinite(n) && n > 0) ? n : null;
+    };
+
+    try{
+      const scripts = Array.from(doc.querySelectorAll('script'));
+
+      // まずはRB公式描画IIFEらしい script を優先する。
+      for(const sc of scripts){
+        const t = sc.textContent || '';
+        if(!t) continue;
+        if(
+          t.includes('GRID_SIZE') &&
+          (t.includes('modeQS') || t.includes('gridWrap') || t.includes('gridOverlay') || t.includes('cellColors'))
+        ){
+          const n = parseSizeFromText(t);
+          if(n) return n;
+        }
       }
-      // modeQS が無いサンプルにも備えて、rb らしさで緩めに判定
-      if(t.includes('const GRID_SIZE') && t.includes('gridWrap') && t.includes('gridOverlay')){
-        const m = t.match(/const\s+GRID_SIZE\s*=\s*(\d+)\s*;/);
-        if(m) return Number(m[1]);
+
+      // 念のため、条件を緩めて全scriptから拾う。
+      for(const sc of scripts){
+        const n = parseSizeFromText(sc && sc.textContent);
+        if(n) return n;
       }
-    }
+    }catch(_e){}
+
+    try{
+      if(doc === document){
+        const snap = DBA_BATTLEMAP_SNAPSHOT_CACHE && DBA_BATTLEMAP_SNAPSHOT_CACHE.snapshot;
+        const n = Number(snap && snap.rows);
+        if(Number.isFinite(n) && n > 0 && Number(snap && snap.cols) === n) return n;
+      }
+    }catch(_e){}
+
+    try{
+      const overlay = doc.getElementById ? doc.getElementById('gridOverlay') : null;
+      if(overlay && Number(overlay.width) > 0 && Number(overlay.height) > 0){
+        // 公式canvasは正方形マップなので、script抽出に失敗した時だけ実寸から推定する。
+        const cssW = Number(overlay.clientWidth || 0);
+        const rawW = Number(overlay.width || 0);
+        const dpr = cssW > 0 ? (rawW / cssW) : (window.devicePixelRatio || 1);
+        const approxCell = Math.max(16, Math.min(64, Math.round(32 * (dpr || 1))));
+        const n = Math.round(rawW / approxCell);
+        if(Number.isFinite(n) && n > 0) return n;
+      }
+    }catch(_e){}
+
     return null;
   }
 
@@ -8689,9 +9308,11 @@
       const rx = x - rect.left;
       const ry = y - rect.top;
       if(rx < 0 || ry < 0 || rx >= rect.width || ry >= rect.height) return null;
-      const cellCss = rect.width / GRID_SIZE; // 見た目上のセルサイズ
-      const c = Math.floor(rx / cellCss);
-      const r = Math.floor(ry / cellCss);
+      const cellW = rect.width / GRID_SIZE;  // 見た目上のセル幅
+      const cellH = rect.height / GRID_SIZE; // 見た目上のセル高
+      if(!Number.isFinite(cellW) || !Number.isFinite(cellH) || cellW <= 0 || cellH <= 0) return null;
+      const c = Math.floor(rx / cellW);
+      const r = Math.floor(ry / cellH);
       if(r<0||c<0||r>=GRID_SIZE||c>=GRID_SIZE) return null;
       return { r, c, x, y };
     }
@@ -8700,13 +9321,35 @@
     let lpTimer = 0;
     let lpFired = false;
     let lpCtx = null;
+    let lpSeq = 0;
 
     function clearLP(){
+      lpSeq += 1;
       if(lpTimer){
         clearTimeout(lpTimer);
         lpTimer = 0;
       }
       longPressGaugeCancel();
+    }
+
+    function resetLPState(){
+      clearLP();
+      lpFired = false;
+      lpCtx = null;
+    }
+
+    function makeLpCtxSnapshot(ctx){
+      if(!ctx) return null;
+      return {
+        r: Number(ctx.r),
+        c: Number(ctx.c),
+        x: Number(ctx.x),
+        y: Number(ctx.y)
+      };
+    }
+
+    function isLpSeqCurrent(seq){
+      return seq === lpSeq;
     }
 
     // iOS Safari 対策：touch と pointer の二重発火を抑止
@@ -8741,17 +9384,13 @@
       if(evt.type === 'pointerdown' && (Date.now() - lastTouchAt) < 800) return;
 
       if(isContextMenuGuardActive()){
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
       if(!isPrimaryActivationEvent(evt)){
         armContextMenuGuard(900);
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
@@ -8759,19 +9398,33 @@
       evt.preventDefault();
       evt.stopImmediatePropagation();
 
-      lpFired = false;
-      clearLP();
+      resetLPState();
       lpCtx = calcRC(evt);
-      if(!lpCtx) return;
+      if(!lpCtx){
+        resetLPState();
+        return;
+      }
+
+      try{
+        if(evt.type === 'pointerdown' && typeof overlay.setPointerCapture === 'function' && Number.isFinite(evt.pointerId)){
+          overlay.setPointerCapture(evt.pointerId);
+        }
+      }catch(_e){}
 
       // 長押しメニューは、オート装備OFFでも開けるようにする
       // （タイル操作「要塞を建設」「レーダーを設置」も同じメニュー内にあるため）
+      const ctx = makeLpCtxSnapshot(lpCtx);
+      const seq = ++lpSeq;
       longPressGaugeStart(lpCtx.x, lpCtx.y, LP_MS);
       lpTimer = setTimeout(async () => {
+        if(!isLpSeqCurrent(seq)) return;
+        lpTimer = 0;
         lpFired = true;
         try{
           longPressGaugeComplete();
-          await handleAutoEquipLongPress(lpCtx.r, lpCtx.c, lpCtx.x, lpCtx.y);
+          if(ctx){
+            await handleAutoEquipLongPress(ctx.r, ctx.c, ctx.x, ctx.y);
+          }
         }catch(_e){
           // noop
         }
@@ -8783,28 +9436,24 @@
       if(evt.type === 'pointerup' && (Date.now() - lastTouchAt) < 800) return;
 
       if(isContextMenuGuardActive()){
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
       if(!isPrimaryActivationEvent(evt)){
         armContextMenuGuard(900);
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
       evt.preventDefault();
       evt.stopImmediatePropagation();
 
-      clearLP();
-      const ctx = lpCtx || calcRC(evt);
-      lpCtx = null;
+      const ctx = makeLpCtxSnapshot(lpCtx) || calcRC(evt);
+      const fired = lpFired;
+      resetLPState();
       if(!ctx) return;
-      if(lpFired) return;
+      if(fired) return;
 
       // 通常クリック
       (async () => {
@@ -8826,25 +9475,34 @@
 
     overlay.addEventListener('pointerdown', onPointerDown, true);
     overlay.addEventListener('pointerup', onPointerUp, true);
-    overlay.addEventListener('pointercancel', (e)=>{ clearLP(); }, true);
+    overlay.addEventListener('pointercancel', (e)=>{ resetLPState(); }, true);
     overlay.addEventListener('contextmenu', (evt) => {
       armContextMenuGuard(1200);
-      clearLP();
-      lpFired = false;
-      lpCtx = null;
+      resetLPState();
     }, true);
     overlay.addEventListener('auxclick', (evt) => {
       armContextMenuGuard(900);
-      clearLP();
-      lpFired = false;
-      lpCtx = null;
+      resetLPState();
       evt.preventDefault();
       evt.stopImmediatePropagation();
     }, true);
     // iOS Safari 用（passive:false が重要）
     overlay.addEventListener('touchstart', onPointerDown, { capture:true, passive:false });
     overlay.addEventListener('touchend', onPointerUp, { capture:true, passive:false });
-    overlay.addEventListener('touchcancel', (e)=>{ clearLP(); }, { capture:true, passive:false });
+    overlay.addEventListener('touchcancel', (e)=>{ resetLPState(); }, { capture:true, passive:false });
+    window.addEventListener('pointerup', (evt) => {
+      // overlay 外でボタンを離した場合でも、古い長押し判定を残さない。
+      resetLPState();
+    }, false);
+    window.addEventListener('pointercancel', (evt) => {
+      resetLPState();
+    }, false);
+    window.addEventListener('blur', () => {
+      resetLPState();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if(document.hidden) resetLPState();
+    });
     // ★重要：一部環境で pointer で止めても click が別途発火してページ側ハンドラが動く事があるため、
     //        click を capture で確実に遮断する（遷移/既存処理の暴発を防ぐ）
     overlay.addEventListener('click', (evt) => {
@@ -10402,11 +11060,19 @@
       fd.append(submitter.name, submitter.value || sanitizeText(submitter.textContent || ''));
     }
 
+    let priorityTargets = [];
     {
       const row = Number(fd.get('row'));
       const col = Number(fd.get('col'));
       if(isTeamChallengeAction && consumeOwnCapitalAttackIfNeeded(row, col)){
         return;
+      }
+      if(isTeamChallengeAction){
+        priorityTargets = rememberLatestPostTeamChallengeTarget(
+          row,
+          col,
+          'form-submit'
+        ) || [];
       }
     }
 
@@ -10440,7 +11106,7 @@
     if(!ct.includes('text/html')){
       const resultText = bodyText || '結果を表示できませんでした。';
       openBattleResultModalWithNode(resultText, '戦闘結果');
-      scheduleTeamChallengeAutoSyncFromResultText(resultText);
+      scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
 
@@ -10456,7 +11122,7 @@
       if(text.length < 8){
         const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
         openBattleResultModalWithNode(resultText, '戦闘結果');
-        scheduleTeamChallengeAutoSyncFromResultText(resultText);
+        scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
         return;
       }
 
@@ -10465,7 +11131,7 @@
       {
         const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : imported.textContent;
         openBattleResultModalWithNode(resultText, '戦闘結果');
-        scheduleTeamChallengeAutoSyncFromResultText(resultText);
+        scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTarget);
       }
       return;
     }
@@ -10473,7 +11139,7 @@
     {
       const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
       openBattleResultModalWithNode(resultText, '戦闘結果');
-      scheduleTeamChallengeAutoSyncFromResultText(resultText);
+      scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
     }
   }
 
@@ -10555,13 +11221,35 @@
     let lpTimer = 0;
     let lpFired = false;
     let lpCtx = null;
+    let lpSeq = 0;
 
     function clearLP(){
+      lpSeq += 1;
       if(lpTimer){
         clearTimeout(lpTimer);
         lpTimer = 0;
       }
       longPressGaugeCancel();
+    }
+
+    function resetLPState(){
+      clearLP();
+      lpFired = false;
+      lpCtx = null;
+    }
+
+    function makeLpCtxSnapshot(ctx){
+      if(!ctx) return null;
+      return {
+        r: Number(ctx.r),
+        c: Number(ctx.c),
+        x: Number(ctx.x),
+        y: Number(ctx.y)
+      };
+    }
+
+    function isLpSeqCurrent(seq){
+      return seq === lpSeq;
     }
 
     function getRCFromEvent(evt){
@@ -10647,17 +11335,13 @@
       if(evt.type === 'pointerdown' && (Date.now() - lastTouchAt) < 800) return;
 
       if(isContextMenuGuardActive()){
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
       if(!isPrimaryActivationEvent(evt)){
         armContextMenuGuard(900);
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
@@ -10668,20 +11352,25 @@
       evt.preventDefault();
       evt.stopImmediatePropagation();
 
-      lpFired = false;
-      clearLP();
+      resetLPState();
       const {x,y} = clientXY(evt);
       // ★重要：rc を確実に保持（spreading 記法や誤記で壊れないよう明示）
       lpCtx = { r: rc.r, c: rc.c, x, y };
 
       // 長押しメニューは、オート装備OFFでも開けるようにする
       // （オート装備候補の確認用途もあるため）
+      const ctx = makeLpCtxSnapshot(lpCtx);
+      const seq = ++lpSeq;
       longPressGaugeStart(lpCtx.x, lpCtx.y, LP_MS);
       lpTimer = setTimeout(async () => {
+        if(!isLpSeqCurrent(seq)) return;
+        lpTimer = 0;
         lpFired = true;
         try{
           longPressGaugeComplete();
-          await handleAutoEquipLongPress(lpCtx.r, lpCtx.c, lpCtx.x, lpCtx.y);
+          if(ctx){
+            await handleAutoEquipLongPress(ctx.r, ctx.c, ctx.x, ctx.y);
+          }
         }catch(_e){
           // noop
         }
@@ -10695,34 +11384,27 @@
       if(evt.type === 'pointerup' && (Date.now() - lastTouchAt) < 800) return;
 
       if(isContextMenuGuardActive()){
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
       if(!isPrimaryActivationEvent(evt)){
         armContextMenuGuard(900);
-        clearLP();
-        lpFired = false;
-        lpCtx = null;
+        resetLPState();
         return;
       }
 
-      const rc = lpCtx ? { r: lpCtx.r, c: lpCtx.c } : getRCFromEvent(evt);
+      const rc = makeLpCtxSnapshot(lpCtx) || getRCFromEvent(evt);
+      const fired = lpFired;
       // ★重要：
       // pointerdown 時に保持した lpCtx は、この pointerup / touchend の処理が終わったら
       // 必ず破棄する。これを残すと、次回以降にグリッド外で pointerup しても
       // 「前回のセル座標」が再利用され、最後にクリックしたセル詳細が誤って開いてしまう。
-      lpCtx = null;
+      resetLPState();
       if(!rc) return;
 
       evt.preventDefault();
       evt.stopImmediatePropagation();
-
-      clearLP();
-      const fired = lpFired;
-      lpFired = false;
 
       if(fired) return;
 
@@ -10744,9 +11426,7 @@
     }
 
     function onCancel(){
-      clearLP();
-      lpFired = false;
-      lpCtx = null;
+      resetLPState();
     }
 
     document.addEventListener('pointerdown', onDown, true);
@@ -10760,9 +11440,7 @@
       const inGrid = (t instanceof Element) ? !!t.closest('.grid') : false;
       if(!inGrid) return;
       armContextMenuGuard(1200);
-      clearLP();
-      lpFired = false;
-      lpCtx = null;
+      resetLPState();
     }, true);
     document.addEventListener('auxclick', (evt) => {
       if(mode === 'rb') return;
@@ -10772,9 +11450,7 @@
       const inGrid = (t instanceof Element) ? !!t.closest('.grid') : false;
       if(!inGrid) return;
       armContextMenuGuard(900);
-      clearLP();
-      lpFired = false;
-      lpCtx = null;
+      resetLPState();
       evt.preventDefault();
       evt.stopImmediatePropagation();
     }, true);
@@ -10782,6 +11458,12 @@
     document.addEventListener('touchstart', onDown, { capture:true, passive:false });
     document.addEventListener('touchend', onUp, { capture:true, passive:false });
     document.addEventListener('touchcancel', onCancel, { capture:true, passive:false });
+    window.addEventListener('blur', () => {
+      resetLPState();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if(document.hidden) resetLPState();
+    });
 
     // ★重要：一部環境で pointer 系で preventDefault しても click が発火し、
     //        a[href] のデフォルト遷移が走る事があるため、grid内の click を capture で確実に潰す
@@ -11250,7 +11932,7 @@
           const { row, col } = job;
           try{
             const { holder, reg } = await fetchCellDetail(row, col);
-            setLayerCellText(row, col, buildLayerCellDisplayText(reg, holder, row, col));
+            rememberFetchedCellDetailText(getCurrentBattlemapSnapshot(), row, col, holder, reg);
           }catch(_e){
             setLayerCellText(row, col, '');
           }
@@ -17616,6 +18298,24 @@
     return t;
   }
 
+  function isLegacyGenerationPickRow(tr, kind){
+    // 武器／防具だけを対象にする。
+    // DBE と同じ考え方で、名称セルの「アイテム名」部分の末尾に * があれば LEGACY とみなす。
+    if(kind !== 'weapon' && kind !== 'armor') return false;
+
+    const td0 = tr ? tr.querySelector('td') : null;
+    if(!td0) return false;
+
+    // DBE 側の dbeParseNameTd() と同じく、span[0] があればそこを名称本体として優先する。
+    // span が無い場合は、セル本文から「【種別】」以降や改行以降を落として判定する。
+    const firstSpan = td0.querySelector('span');
+    const raw = sanitizeText(firstSpan ? firstSpan.textContent : (td0.innerText || td0.textContent || ''));
+    const namePart = raw.split('\n')[0].split('【')[0].trim();
+    if(!namePart) return false;
+
+    return /\*+\s*$/u.test(String(namePart || '').normalize('NFKC'));
+  }
+
   function detectRarityFromRow(tr){
     // ルール：
     // N   … 名称欄に [N] / 背景色 white
@@ -17712,6 +18412,8 @@
     let selectedRow = null;
     let activeRarity = 'ALL';
     let hideModZero = loadPickHideModZero(kind);
+    let hideLegacy = loadPickHideLegacy(kind);
+    const legacyFilterAvailable = (kind === 'weapon' || kind === 'armor');
     let modColIdx = -1;
 
     // 表を取得して表示
@@ -17736,7 +18438,8 @@
           const r = detectRarityFromRow(tr);
           const okRarity = (activeRarity === 'ALL') ? true : (r === activeRarity);
           const okMod = (!hideModZero) ? true : (!isModZeroRow(tr, modColIdx));
-          const show = okRarity && okMod;
+          const okLegacy = (!legacyFilterAvailable || !hideLegacy) ? true : (!isLegacyGenerationPickRow(tr, kind));
+          const show = okRarity && okMod && okLegacy;
           tr.style.display = show ? '' : 'none';
         }
         // 選択行が非表示になったら選択解除
@@ -17783,7 +18486,7 @@
       filterBar.appendChild(mkBtn('SSR', 'SSR', 'dba-pick-filterbtn--ssr'));
       filterBar.appendChild(mkBtn('UR',  'UR',  'dba-pick-filterbtn--ur'));
 
-      // チェックボックス：MOD 0 は表示しない
+      // チェックボックス：MOD 0 非表示
       const chkWrap = document.createElement('label');
       chkWrap.className = 'dba-pick-filterchk';
       chkWrap.id = 'dba-pick-chk-mod0-wrap';
@@ -17794,7 +18497,7 @@
       chk.checked = !!hideModZero;
 
       const chkText = document.createElement('span');
-      chkText.textContent = 'MOD 0 は表示しない';
+      chkText.textContent = 'MOD 0 非表示';
 
       chkWrap.appendChild(chk);
       chkWrap.appendChild(chkText);
@@ -17816,6 +18519,32 @@
 
       // 初期状態をUIへ反映
       chk.checked = !!hideModZero;
+
+      // チェックボックス：LEGACY 非表示（武器／防具のみ）
+      if(legacyFilterAvailable){
+        const legacyWrap = document.createElement('label');
+        legacyWrap.className = 'dba-pick-filterchk';
+        legacyWrap.id = 'dba-pick-chk-legacy-wrap';
+
+        const legacyChk = document.createElement('input');
+        legacyChk.type = 'checkbox';
+        legacyChk.id = 'dba-pick-chk-legacy';
+        legacyChk.checked = !!hideLegacy;
+
+        const legacyChkText = document.createElement('span');
+        legacyChkText.textContent = 'LEGACY非表示';
+
+        legacyWrap.appendChild(legacyChk);
+        legacyWrap.appendChild(legacyChkText);
+        filterBar.appendChild(legacyWrap);
+
+        legacyChk.addEventListener('change', (e) => {
+          e.stopPropagation();
+          hideLegacy = !!legacyChk.checked;
+          savePickHideLegacy(kind, hideLegacy);
+          applyPickFilters();
+        });
+      }
 
       // 選択ハンドラ
       for(const tr of Array.from(imported.querySelectorAll('tbody tr'))){
@@ -18410,6 +19139,119 @@
     }
   }
 
+  function scheduleHeaderAndTeamTablesRefreshFromTopPage(reason){
+    if(mode !== 'rb') return false;
+    window.setTimeout(() => {
+      fetchLatestTopPageDoc().then(({ topUrl, doc }) => {
+        const snap = getBattlemapSnapshotFromDoc(doc);
+        return refreshHeaderAndTeamTablesFromFetchedDoc(doc, {
+          topUrl,
+          snapshot: snap
+        });
+      }).catch((e) => {
+        dbgLog('battlemapRefresh', 'warn', 'deferred header/team-tables refresh failed', {
+          reason: String(reason || ''),
+          error: String(e && e.message ? e.message : e)
+        });
+      });
+    }, 0);
+    return true;
+  }
+
+  async function fetchRbLiveMapSnapshotOnce(sourceLabel){
+    if(mode !== 'rb') return null;
+
+    let timeoutId = 0;
+    const controller = (typeof AbortController === 'function')
+      ? new AbortController()
+      : null;
+
+    try{
+      if(controller){
+        timeoutId = window.setTimeout(() => {
+          try{ controller.abort(); }catch(_e){}
+        }, Math.max(1000, Number(DBA_RB_LIVE_MAP_FAST_FETCH_TIMEOUT_MS || 0)));
+      }
+
+      const res = await fetch('/map/rb/static', {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' },
+        signal: controller ? controller.signal : undefined
+      });
+      if(!res.ok) return null;
+
+      const payload = await res.json();
+      const snap = buildRbSnapshotFromLiveMapPayload(payload);
+      if(!snap) return null;
+
+      return {
+        payload,
+        snapshot: snap,
+        source: String(sourceLabel || 'rb-live-map-fast')
+      };
+    }catch(_e){
+      return null;
+    }finally{
+      if(timeoutId){
+        try{ clearTimeout(timeoutId); }catch(_e){}
+      }
+    }
+  }
+
+  async function applyRbLiveMapSnapshotFast(newSnap, sourceLabel){
+    if(mode !== 'rb') return null;
+    if(!newSnap) return null;
+
+    const curSnap = getCurrentBattlemapSnapshot();
+    const sizeChanged =
+      !curSnap ||
+      Number(curSnap.rows) !== Number(newSnap.rows) ||
+      Number(curSnap.cols) !== Number(newSnap.cols);
+
+    let changed = [];
+    let canvasApplied = false;
+
+    if(sizeChanged){
+      canvasApplied = tryRefreshRbBattlemapViaCurrentApi(
+        newSnap,
+        `${String(sourceLabel || 'rb-live-map-fast')}:size-changed`
+      );
+    }else{
+      changed = diffChangedCells(curSnap, newSnap);
+      if(changed.length > 0){
+        canvasApplied = applyRbBattlemapPartialUpdate(newSnap, changed);
+      }else{
+        setBattlemapSnapshotCache(newSnap, String(sourceLabel || 'rb-live-map-fast'));
+        canvasApplied = true;
+      }
+    }
+
+    if(!canvasApplied){
+      return null;
+    }
+
+    initBattlemapLayer();
+    resetBattlemapLayerRectStabilizer();
+    scheduleBattlemapLayerSync();
+    await raf2();
+
+    renderRbOriginalBorders(newSnap);
+    renderRbCapitalCrowns(newSnap);
+    renderCurrentCellMarker(newSnap);
+    renderOwnCapitalRapidAttackBlockers(newSnap);
+    scheduleBattlemapLayerSync();
+    scheduleDeferredLocalOwnershipCountsUpdate(String(sourceLabel || 'rb-live-map-fast'));
+
+    return {
+      snapshot: newSnap,
+      previousSnapshot: curSnap,
+      changed,
+      sizeChanged
+    };
+  }
+
   function findCurrentBattlemapRoot(){
     if(mode === 'rb'){
       return document.querySelector('.gridCanvasOuter') || document.getElementById('gridWrap');
@@ -18646,6 +19488,23 @@
         }
       }
     }
+
+    // 公式ページ新実装:
+    //   /map/rb/static を LIVE_POLL_MS 間隔で取得して applyLiveMapPayload() に流す。
+    // DBA側では、陣取り変化の反映を少し速めるため 4000ms → 1500ms に短縮する。
+    // また、別ウィンドウ操作などで document.hasFocus() が false になっても、
+    // タブが表示中なら live map 追従は続ける。
+    patched = patched.replace(
+      /const\s+LIVE_POLL_MS\s*=\s*4000\s*;/,
+      `const LIVE_POLL_MS = 1500;`
+    );
+
+    patched = patched.replace(
+      /function\s+livePollAllowed\s*\(\s*\)\s*\{\s*return\s+!livePollStopped\s*&&\s*document\.visibilityState\s*===\s*'visible'\s*&&\s*document\.hasFocus\s*\(\s*\)\s*;\s*\}/,
+      `function livePollAllowed(){
+    return !livePollStopped && document.visibilityState === 'visible';
+  }`
+    );
 
     patched = patched.replace(
       /function\s+loop\s*\(\s*t\s*\)\s*\{\s*drawOverlay\s*\(\s*t\s*\|\|\s*0\s*\)\s*;\s*requestAnimationFrame\s*\(\s*loop\s*\)\s*;\s*\}/,
@@ -19825,14 +20684,27 @@
 
     if(mode === 'rb'){
       const known = new Set();
-      for(const k of Array.from(snapshot.visibleSet || [])) known.add(k);
-      for(const k of Array.from(snapshot.exploredSet || [])) known.add(k);
-      for(const k of known){
-        const m = String(k).match(/^(\d+)-(\d+)$/);
-        if(!m) continue;
-        out.push({ row: Number(m[1]), col: Number(m[2]) });
-      }
-      out.sort((a,b) => (a.row - b.row) || (a.col - b.col));
+      const pushKnown = (k, fowVisible) => {
+        const key = String(k || '');
+        if(!key || known.has(key)) return;
+        known.add(key);
+        const m = key.match(/^(\d+)-(\d+)$/);
+        if(!m) return;
+        out.push({
+          row: Number(m[1]),
+          col: Number(m[2]),
+          fowVisible: !!fowVisible
+        });
+      };
+
+      // RBのFOW上「現在見えているセル」を先に並べ、探索済みだが現在は見えていないセルは後回しにする。
+      for(const k of Array.from(snapshot.visibleSet || [])) pushKnown(k, true);
+      for(const k of Array.from(snapshot.exploredSet || [])) pushKnown(k, false);
+      out.sort((a,b) => {
+        const av = a.fowVisible ? 0 : 1;
+        const bv = b.fowVisible ? 0 : 1;
+        return (av - bv) || (a.row - b.row) || (a.col - b.col);
+      });
       return out;
     }
 
@@ -19871,6 +20743,254 @@
         ? String(snap[key] || '')
         : '';
     }
+  }
+
+  // =========================
+  // RB 長押し戦況情報：セル詳細テキストキャッシュ
+  //  - 変更のないセルは前回表示を再利用し、詳細ページ取得をスキップする
+  //  - 取得が必要なセルは、画面内に見えているセル → FOW上可視セル → 探索済みセルの順に処理する
+  // =========================
+  const DBA_RB_CELL_DETAIL_TEXT_CACHE = {
+    map: new Map(),
+    generation: 0
+  };
+
+  function rbCellKeyComma(row, col){
+    return `${Number(row)},${Number(col)}`;
+  }
+
+  function rbCellKeyDash(row, col){
+    return `${Number(row)}-${Number(col)}`;
+  }
+
+  function pruneRbCellDetailTextCache(now){
+    const currentNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const maxAge = Math.max(30 * 1000, Number(DBA_RB_CELL_DETAIL_CACHE_MAX_AGE_MS || 0));
+
+    for(const [key, item] of DBA_RB_CELL_DETAIL_TEXT_CACHE.map.entries()){
+      const updatedAt = Number(item && item.updatedAt || 0);
+      if(!(updatedAt > 0) || (currentNow - updatedAt) > maxAge){
+        DBA_RB_CELL_DETAIL_TEXT_CACHE.map.delete(key);
+      }
+    }
+
+    const maxEntries = Math.max(100, Number(DBA_RB_CELL_DETAIL_CACHE_MAX_ENTRIES || 0));
+    while(DBA_RB_CELL_DETAIL_TEXT_CACHE.map.size > maxEntries){
+      const first = DBA_RB_CELL_DETAIL_TEXT_CACHE.map.keys().next();
+      if(first.done) break;
+      DBA_RB_CELL_DETAIL_TEXT_CACHE.map.delete(first.value);
+    }
+  }
+
+  function clearRbCellDetailTextCache(reason){
+    try{
+      DBA_RB_CELL_DETAIL_TEXT_CACHE.map.clear();
+      DBA_RB_CELL_DETAIL_TEXT_CACHE.generation += 1;
+      dbgLog('battleInfo', 'info', 'RB cell detail text cache cleared', {
+        reason: String(reason || ''),
+        generation: DBA_RB_CELL_DETAIL_TEXT_CACHE.generation
+      });
+    }catch(_e){}
+  }
+
+  function buildRbCellDetailCacheSignature(snapshot, row, col){
+    if(mode !== 'rb') return '';
+    if(!snapshot || typeof snapshot !== 'object') return '';
+
+    const r = Number(row);
+    const c = Number(col);
+    if(!Number.isFinite(r) || !Number.isFinite(c)) return '';
+
+    const key = rbCellKeyDash(r, c);
+    const color = (snapshot.cellColors && Object.prototype.hasOwnProperty.call(snapshot.cellColors, key))
+      ? String(snapshot.cellColors[key] || '')
+      : '';
+    const cap = (snapshot.capitalSet instanceof Set && snapshot.capitalSet.has(key)) ? '1' : '0';
+    const visible = (snapshot.visibleSet instanceof Set && snapshot.visibleSet.has(key)) ? '1' : '0';
+    const explored = (snapshot.exploredSet instanceof Set && snapshot.exploredSet.has(key)) ? '1' : '0';
+
+    // terrainsKey / buildingsKey はグローバル署名として含める。
+    // 建物や地形が変わった場合は安全側で該当試合の詳細キャッシュを広めに無効化する。
+    return [
+      String(snapshot.mode || mode),
+      `${Number(snapshot.rows || 0)}x${Number(snapshot.cols || 0)}`,
+      key,
+      color,
+      `cap:${cap}`,
+      `vis:${visible}`,
+      `exp:${explored}`,
+      `terrain:${String(snapshot.terrainsKey || '')}`,
+      `build:${String(snapshot.buildingsKey || '')}`
+    ].join('|');
+  }
+
+  function rememberRbCellDetailText(snapshot, row, col, text){
+    if(mode !== 'rb') return false;
+    const sig = buildRbCellDetailCacheSignature(snapshot, row, col);
+    if(!sig) return false;
+
+    const t = String(text || '');
+    if(!t || /^ERR\b/.test(t)) return false;
+
+    pruneRbCellDetailTextCache(Date.now());
+    DBA_RB_CELL_DETAIL_TEXT_CACHE.map.set(rbCellKeyComma(row, col), {
+      sig,
+      text: t,
+      updatedAt: Date.now()
+    });
+    return true;
+  }
+
+  function getRbCachedCellDetailText(snapshot, row, col){
+    if(mode !== 'rb') return null;
+    const sig = buildRbCellDetailCacheSignature(snapshot, row, col);
+    if(!sig) return null;
+
+    const key = rbCellKeyComma(row, col);
+    const item = DBA_RB_CELL_DETAIL_TEXT_CACHE.map.get(key) || null;
+    if(!item || item.sig !== sig) return null;
+
+    const updatedAt = Number(item.updatedAt || 0);
+    const maxAge = Math.max(30 * 1000, Number(DBA_RB_CELL_DETAIL_CACHE_MAX_AGE_MS || 0));
+    if(!(updatedAt > 0) || (Date.now() - updatedAt) > maxAge){
+      DBA_RB_CELL_DETAIL_TEXT_CACHE.map.delete(key);
+      return null;
+    }
+
+    return String(item.text || '');
+  }
+
+  function seedRbCellDetailTextCacheFromLayerSnapshot(snapshot, textSnapshot){
+    if(mode !== 'rb') return 0;
+    if(!snapshot || !textSnapshot || typeof textSnapshot !== 'object') return 0;
+
+    let n = 0;
+    for(const [key, text] of Object.entries(textSnapshot)){
+      const m = String(key || '').match(/^(\d+),(\d+)$/);
+      if(!m) continue;
+      const t = String(text || '');
+      if(!t || /^ERR\b/.test(t)) continue;
+      if(rememberRbCellDetailText(snapshot, Number(m[1]), Number(m[2]), t)) n += 1;
+    }
+    return n;
+  }
+
+  function rememberFetchedCellDetailText(snapshot, row, col, holder, reg){
+    const text = buildLayerCellDisplayText(reg, holder, row, col);
+    setLayerCellText(row, col, text);
+    rememberRbCellDetailText(snapshot, row, col, text);
+    return text;
+  }
+
+  function getLayerCellScreenPriority(row, col){
+    try{
+      const content = dbaLayerCellContentMap.get(rbCellKeyComma(row, col)) || null;
+      const cell = content && content.parentElement ? content.parentElement : null;
+      if(!cell || typeof cell.getBoundingClientRect !== 'function'){
+        return { screenVisible:false, distance: Number.MAX_SAFE_INTEGER };
+      }
+
+      const rect = cell.getBoundingClientRect();
+      const vw = Math.max(1, Number(window.innerWidth || document.documentElement.clientWidth || 0));
+      const vh = Math.max(1, Number(window.innerHeight || document.documentElement.clientHeight || 0));
+      const margin = 24;
+      const screenVisible = (
+        rect.right >= -margin &&
+        rect.bottom >= -margin &&
+        rect.left <= vw + margin &&
+        rect.top <= vh + margin
+      );
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = cx - (vw / 2);
+      const dy = cy - (vh / 2);
+      return {
+        screenVisible,
+        distance: Math.sqrt(dx * dx + dy * dy)
+      };
+    }catch(_e){
+      return { screenVisible:false, distance: Number.MAX_SAFE_INTEGER };
+    }
+  }
+
+  function buildRbAllCellDetailFetchPlan(curSnap, newSnap, jobs){
+    const out = {
+      fetchJobs: [],
+      cached: 0,
+      skipped: 0,
+      changed: 0,
+      total: Array.isArray(jobs) ? jobs.length : 0
+    };
+
+    if(mode !== 'rb' || !newSnap || !Array.isArray(jobs)){
+      out.fetchJobs = Array.isArray(jobs) ? jobs.slice() : [];
+      return out;
+    }
+
+    let changedKeys = null;
+    const sameSize = !!(
+      curSnap &&
+      Number(curSnap.rows) === Number(newSnap.rows) &&
+      Number(curSnap.cols) === Number(newSnap.cols)
+    );
+    if(sameSize){
+      changedKeys = new Set(
+        diffChangedCells(curSnap, newSnap).map((it) => rbCellKeyComma(it.row, it.col))
+      );
+    }
+
+    for(const rawJob of jobs){
+      if(!rawJob) continue;
+      const row = Number(rawJob.row);
+      const col = Number(rawJob.col);
+      if(!Number.isFinite(row) || !Number.isFinite(col)) continue;
+
+      const commaKey = rbCellKeyComma(row, col);
+      const changed = !changedKeys || changedKeys.has(commaKey);
+      if(changed) out.changed += 1;
+
+      const cachedText = (!changed)
+        ? getRbCachedCellDetailText(newSnap, row, col)
+        : null;
+      if(cachedText != null){
+        setLayerCellText(row, col, cachedText);
+        out.cached += 1;
+        out.skipped += 1;
+        continue;
+      }
+
+      const screen = getLayerCellScreenPriority(row, col);
+      out.fetchJobs.push({
+        row,
+        col,
+        fowVisible: !!rawJob.fowVisible,
+        changed,
+        screenVisible: !!screen.screenVisible,
+        screenDistance: Number(screen.distance || Number.MAX_SAFE_INTEGER)
+      });
+    }
+
+    out.fetchJobs.sort((a,b) => {
+      const as = a.screenVisible ? 0 : 1;
+      const bs = b.screenVisible ? 0 : 1;
+      if(as !== bs) return as - bs;
+
+      const af = a.fowVisible ? 0 : 1;
+      const bf = b.fowVisible ? 0 : 1;
+      if(af !== bf) return af - bf;
+
+      const ac = a.changed ? 0 : 1;
+      const bc = b.changed ? 0 : 1;
+      if(ac !== bc) return ac - bc;
+
+      const ad = Number(a.screenDistance || Number.MAX_SAFE_INTEGER);
+      const bd = Number(b.screenDistance || Number.MAX_SAFE_INTEGER);
+      if(ad !== bd) return ad - bd;
+
+      return (a.row - b.row) || (a.col - b.col);
+    });
+
+    return out;
   }
 
   function clearLayerDecos(){
@@ -20395,25 +21515,35 @@
       let src = '';
       for(const s of scripts){
         const t = (s && s.textContent) ? String(s.textContent) : '';
-        if(t.includes('window.__FOW') && t.includes('"hasCapital"') && (t.includes('"explored"') || t.includes('"visible"'))){
+        if(!t) continue;
+        if(t.includes('window.__FOW') && (t.includes('"explored"') || t.includes('"visible"') || t.includes('hasCapital'))){
           src = t;
           break;
         }
       }
       if(!src) return { visible: [], explored: [], hasCapital: false };
 
-      const mx = src.match(/"explored"\s*:\s*(\[[\s\S]*?\])\s*,\s*"hasCapital"/);
-      const mh = src.match(/"hasCapital"\s*:\s*(true|false)/);
-      const mv = src.match(/"visible"\s*:\s*(\[[\s\S]*?\])\s*}\s*;?/);
+      let obj = null;
+      const objText = extractAssignedObjectLiteral(src, 'window.__FOW');
+      if(objText){
+        try{ obj = JSON.parse(objText); }catch(_e){ obj = null; }
+      }
 
-      const explored = (mx && mx[1]) ? JSON.parse(mx[1]) : [];
-      const visible  = (mv && mv[1]) ? JSON.parse(mv[1]) : [];
-      const hasCapital = !!(mh && mh[1] === 'true');
+      if(!obj || typeof obj !== 'object'){
+        const mx = src.match(/"explored"\s*:\s*(\[[\s\S]*?\])\s*,\s*"hasCapital"/);
+        const mh = src.match(/"hasCapital"\s*:\s*(true|false)/);
+        const mv = src.match(/"visible"\s*:\s*(\[[\s\S]*?\])\s*}\s*;?/);
+        obj = {
+          explored: (mx && mx[1]) ? JSON.parse(mx[1]) : [],
+          visible: (mv && mv[1]) ? JSON.parse(mv[1]) : [],
+          hasCapital: !!(mh && mh[1] === 'true')
+        };
+      }
 
       return {
-        visible: Array.isArray(visible) ? visible : [],
-        explored: Array.isArray(explored) ? explored : [],
-        hasCapital
+        visible: Array.isArray(obj.visible) ? obj.visible : [],
+        explored: Array.isArray(obj.explored) ? obj.explored : [],
+        hasCapital: !!obj.hasCapital
       };
     }catch(_e){
       return { visible: [], explored: [], hasCapital: false };
@@ -20782,21 +21912,74 @@ function avatarsKeyToMap(avatarsKey){
     const topUrl = meta?.topUrl || makeTeambattleUrl({ m: mode });
     let refreshed = false;
     let newSnap = meta?.snapshot || null;
+    let curSnap = null;
     let jobs = [];
 
     try{
-      if(!doc) throw new Error('doc is null');
+      curSnap = getCurrentBattlemapSnapshot();
+      const oldTexts = snapshotLayerTexts();
+      if(mode === 'rb'){
+        seedRbCellDetailTextCacheFromLayerSnapshot(curSnap, oldTexts);
+      }
+
       if(!newSnap){
+        if(!doc) throw new Error('doc is null');
         newSnap = getBattlemapSnapshotFromDoc(doc);
       }
       jobs = buildAllCellJobsFromSnapshot(newSnap);
 
-      refreshed = await refreshBattlemapFromFetchedDoc(doc, {
-        topUrl,
-        snapshot: newSnap
-      });
-      if(!refreshed){
-        throw new Error('battlemap refresh failed');
+      if(
+        mode === 'rb' &&
+        meta?.preferLiveMapFastPath &&
+        newSnap
+      ){
+        if(
+          curSnap &&
+          (Number(curSnap.rows) !== Number(newSnap.rows) || Number(curSnap.cols) !== Number(newSnap.cols))
+        ){
+          clearRbCellDetailTextCache('rb-longpress:size-changed');
+        }
+
+        const applied = await applyRbLiveMapSnapshotFast(
+          newSnap,
+          'battle-info-longpress:rb-live-map'
+        );
+        if(!applied){
+          throw new Error('rb live map longpress refresh failed');
+        }
+
+        initBattlemapLayer();
+        resetBattlemapLayerRectStabilizer();
+        scheduleBattlemapLayerSync();
+        await raf2();
+        restoreLayerTextsFromSnapshot(oldTexts, buildAllowedLayerTextKeySet(newSnap));
+        scheduleHeaderAndTeamTablesRefreshFromTopPage('battle-info-longpress:deferred-header');
+        refreshed = true;
+      }else{
+        if(!doc) throw new Error('doc is null');
+        if(
+          mode === 'rb' &&
+          curSnap &&
+          (Number(curSnap.rows) !== Number(newSnap.rows) || Number(curSnap.cols) !== Number(newSnap.cols))
+        ){
+          clearRbCellDetailTextCache('rb-longpress:size-changed');
+        }
+
+        refreshed = await refreshBattlemapFromFetchedDoc(doc, {
+          topUrl,
+          snapshot: newSnap
+        });
+        if(!refreshed){
+          throw new Error('battlemap refresh failed');
+        }
+
+        initBattlemapLayer();
+        resetBattlemapLayerRectStabilizer();
+        scheduleBattlemapLayerSync();
+        await raf2();
+        if(mode === 'rb'){
+          restoreLayerTextsFromSnapshot(oldTexts, buildAllowedLayerTextKeySet(newSnap));
+        }
       }
     }catch(_e){
       refreshed = false;
@@ -20818,13 +22001,21 @@ function avatarsKeyToMap(avatarsKey){
       return;
     }
 
-    initBattlemapLayer();
-    resetBattlemapLayerRectStabilizer();
-    scheduleBattlemapLayerSync();
-    await raf2();
+    let detailJobs = jobs;
+    let cachedCount = 0;
+    let skippedCount = 0;
+    if(mode === 'rb'){
+      const plan = buildRbAllCellDetailFetchPlan(curSnap, newSnap, jobs);
+      detailJobs = plan.fetchJobs;
+      cachedCount = Number(plan.cached || 0);
+      skippedCount = Number(plan.skipped || 0);
+      if(btn){
+        btn.textContent = `戦況取得中…(${detailJobs.length}/${plan.total}件取得・${cachedCount}件再利用)`;
+      }
+    }
 
-    const CONCURRENCY = 16;
-    await mapLimit(jobs, CONCURRENCY, async (job) => {
+    const CONCURRENCY = (mode === 'rb') ? 12 : 16;
+    await mapLimit(detailJobs, CONCURRENCY, async (job, idx) => {
       const { row, col } = job;
       try{
         const { holder, reg } = await fetchCellDetail(row, col);
@@ -20843,6 +22034,15 @@ function avatarsKeyToMap(avatarsKey){
       endBattlemapLayerTextFreeze();
     }
 
+    if(mode === 'rb'){
+      dbgLog('battleInfo', 'info', 'RB longpress detail fetch plan completed', {
+        total: jobs.length,
+        fetched: detailJobs.length,
+        cached: cachedCount,
+        skipped: skippedCount
+      });
+    }
+
     if(btn){
       btn.disabled = false;
       btn.dataset.dbaBusy = '0';
@@ -20851,6 +22051,18 @@ function avatarsKeyToMap(avatarsKey){
   }
 
   async function scanAllCellsAndRender(){
+    if(mode === 'rb'){
+      const live = await fetchRbLiveMapSnapshotOnce('battle-info-longpress');
+      if(live && live.snapshot){
+        return scanAllCellsAndRenderFromFetchedDoc(null, {
+          topUrl: '/map/rb/static',
+          snapshot: live.snapshot,
+          showAlertOnError: true,
+          preferLiveMapFastPath: true
+        });
+      }
+    }
+
     const { topUrl, doc } = await fetchLatestTopPageDoc();
     const newSnap = getBattlemapSnapshotFromDoc(doc);
     return scanAllCellsAndRenderFromFetchedDoc(doc, {
@@ -21142,11 +22354,20 @@ function avatarsKeyToMap(avatarsKey){
       if(mode !== 'rb') return null;
       if(!payload || typeof payload !== 'object') return null;
 
-      const size = Number(payload.gridSize);
+      const size = Number(payload.gridSize ?? payload.grid_size ?? payload.size ?? payload.rows ?? payload.cols);
       if(!Number.isFinite(size) || size <= 0) return null;
 
-      const fow = (payload.fow && typeof payload.fow === 'object') ? payload.fow : {};
-      const capitalsObj = (payload.capitals && typeof payload.capitals === 'object') ? payload.capitals : {};
+      const fow = (payload.fow && typeof payload.fow === 'object')
+        ? payload.fow
+        : {
+            visible: Array.isArray(payload.visible) ? payload.visible : [],
+            explored: Array.isArray(payload.explored) ? payload.explored : [],
+            hasCapital: !!payload.hasCapital
+          };
+      const capitalsObj =
+        (payload.capitals && typeof payload.capitals === 'object') ? payload.capitals :
+        (payload.capitalMap && typeof payload.capitalMap === 'object') ? payload.capitalMap :
+        (Array.isArray(payload.capitalList) ? payload.capitalList : {});
 
       const out = {
         mode,
@@ -21165,11 +22386,11 @@ function avatarsKeyToMap(avatarsKey){
         selfAvatar: null
       };
 
-      out.cellColors = normalizeCellColors(payload.gridColors || Object.create(null));
-      out.capitalSet = normalizeCapitalSet(Object.values(capitalsObj));
-      out.terrainsKey = normalizeTerrainsPayload(payload.gridTerrains || null);
-      out.buildingsKey = normalizeBuildingsPayload(payload.buildings || null);
-      out.avatarsKey = normalizeAvatarsPayload(payload.avatars || null);
+      out.cellColors = normalizeCellColors(payload.gridColors ?? payload.cellColors ?? payload.colors ?? Object.create(null));
+      out.capitalSet = normalizeCapitalSet(Array.isArray(capitalsObj) ? capitalsObj : Object.values(capitalsObj));
+      out.terrainsKey = normalizeTerrainsPayload(payload.gridTerrains ?? payload.terrains ?? payload.terrain ?? null);
+      out.buildingsKey = normalizeBuildingsPayload(payload.buildings ?? payload.buildingsPayload ?? null);
+      out.avatarsKey = normalizeAvatarsPayload(payload.avatars ?? payload.avatarsPayload ?? null);
 
       {
         const avInfo = avatarsKeyToMap(out.avatarsKey);
@@ -21206,6 +22427,21 @@ function avatarsKeyToMap(avatarsKey){
         Number(cur.rows) !== Number(snap.rows) ||
         Number(cur.cols) !== Number(snap.cols);
 
+      let canvasApplied = false;
+      let changed = [];
+
+      if(cur && !sizeChanged){
+        changed = diffChangedCells(cur, snap);
+        if(changed.length > 0){
+          canvasApplied = applyRbBattlemapPartialUpdate(snap, changed);
+        }
+      }else if(sizeChanged){
+        canvasApplied = tryRefreshRbBattlemapViaCurrentApi(
+          snap,
+          'official-live-map:size-changed'
+        );
+      }
+
       setBattlemapSnapshotCache(snap, String(source || 'official-live-map'));
 
       if(sizeChanged){
@@ -21213,6 +22449,15 @@ function avatarsKeyToMap(avatarsKey){
         // 将来仕様でサイズ変更が流れてきた場合にもDBAレイヤーだけは破綻させない。
         initBattlemapLayer();
         resetBattlemapLayerRectStabilizer();
+      }
+
+      if(!canvasApplied){
+        try{
+          const rbApi = window.__DBA_RB_API;
+          if(rbApi && typeof rbApi.redrawOverlay === 'function'){
+            rbApi.redrawOverlay();
+          }
+        }catch(_e){}
       }
 
       renderRbOriginalBorders(snap);
@@ -21257,6 +22502,69 @@ function avatarsKeyToMap(avatarsKey){
     return snap;
   }
 
+  function deriveRbGridSizeFromSnapshotParts(parts){
+    let max = -1;
+    const bump = (row, col) => {
+      const r = Number(row);
+      const c = Number(col);
+      if(!Number.isFinite(r) || !Number.isFinite(c)) return;
+      if(r < 0 || c < 0) return;
+      max = Math.max(max, r, c);
+    };
+
+    try{
+      for(const key of Object.keys(parts?.cellColors || {})){
+        const m = String(key || '').match(/^(\d+)-(\d+)$/);
+        if(m) bump(m[1], m[2]);
+      }
+    }catch(_e){}
+
+    try{
+      for(const key of Array.from(parts?.capitalSet || [])){
+        const m = String(key || '').match(/^(\d+)-(\d+)$/);
+        if(m) bump(m[1], m[2]);
+      }
+    }catch(_e){}
+
+    try{
+      const terr = terrainsKeyToMap(parts?.terrainsKey || '');
+      for(const key of terr.keys || []){
+        const m = String(key || '').match(/^(\d+)-(\d+)$/);
+        if(m) bump(m[1], m[2]);
+      }
+    }catch(_e){}
+
+    try{
+      const bld = buildingsKeyToMap(parts?.buildingsKey || '');
+      for(const key of bld.keys || []){
+        const m = String(key || '').match(/^(\d+)-(\d+)$/);
+        if(m) bump(m[1], m[2]);
+      }
+    }catch(_e){}
+
+    try{
+      const av = avatarsKeyToMap(parts?.avatarsKey || '');
+      for(const key of av.keys || []){
+        const m = String(key || '').match(/^(\d+)-(\d+)$/);
+        if(m) bump(m[1], m[2]);
+      }
+      if(av.selfAvatar) bump(av.selfAvatar.row, av.selfAvatar.col);
+    }catch(_e){}
+
+    try{
+      const fow = parts?.fowState || {};
+      for(const list of [fow.visible, fow.explored]){
+        if(!Array.isArray(list)) continue;
+        for(const rc of list){
+          if(!Array.isArray(rc) || rc.length < 2) continue;
+          bump(rc[0], rc[1]);
+        }
+      }
+    }catch(_e){}
+
+    return max >= 0 ? (max + 1) : 0;
+  }
+
   function getBattlemapSnapshotFromDoc(doc){
     const out = {
       mode,
@@ -21285,17 +22593,26 @@ function avatarsKeyToMap(avatarsKey){
       const buildingsPayloadObj = extractRbBuildingsPayloadFromDoc(doc);
       const avatarsPayloadObj = extractRbAvatarsPayloadFromDoc(doc);
 
-      let size = 0;
-      try{ size = Number(parseJsValueLiteral(litSize)); }catch(_e){ size = 0; }
-      if(!Number.isFinite(size) || size <= 0) size = 16;
-      out.rows = size;
-      out.cols = size;
-
       try{ out.cellColors = normalizeCellColors(parseJsValueLiteral(litColors)); }catch(_e){ out.cellColors = Object.create(null); }
       try{ out.capitalSet = normalizeCapitalSet(parseJsValueLiteral(litCap)); }catch(_e){ out.capitalSet = new Set(); }
       try{ out.terrainsKey = normalizeTerrainsPayload(parseJsValueLiteral(litTerr)); }catch(_e){ out.terrainsKey = ''; }
       try{ out.buildingsKey = normalizeBuildingsPayload(buildingsPayloadObj); }catch(_e){ out.buildingsKey = ''; }
       try{ out.avatarsKey = normalizeAvatarsPayload(avatarsPayloadObj); }catch(_e){ out.avatarsKey = ''; }
+      let size = 0;
+      try{ size = Number(parseJsValueLiteral(litSize)); }catch(_e){ size = 0; }
+      if(!Number.isFinite(size) || size <= 0){
+        size = getRbGridSizeFromPageScript(doc) || deriveRbGridSizeFromSnapshotParts({
+          cellColors: out.cellColors,
+          capitalSet: out.capitalSet,
+          terrainsKey: out.terrainsKey,
+          buildingsKey: out.buildingsKey,
+          avatarsKey: out.avatarsKey,
+          fowState
+        });
+      }
+      if(!Number.isFinite(size) || size <= 0) size = 16;
+      out.rows = size;
+      out.cols = size;
       {
         const avInfo = avatarsKeyToMap(out.avatarsKey);
         out.selfAvatar = avInfo && avInfo.selfAvatar ? {
@@ -21735,6 +23052,28 @@ function avatarsKeyToMap(avatarsKey){
     }
 
     try{
+      if(mode === 'rb'){
+        const live = await fetchRbLiveMapSnapshotOnce('map-only:manual-or-teamchallenge');
+        if(live && live.snapshot){
+          const oldTexts = snapshotLayerTexts();
+          const applied = await applyRbLiveMapSnapshotFast(
+            live.snapshot,
+            live.source || 'map-only:rb-live-map'
+          );
+          if(applied){
+            restoreLayerTextsFromSnapshot(oldTexts, buildAllowedLayerTextKeySet(live.snapshot));
+            endBattlemapLayerTextFreeze();
+            scheduleHeaderAndTeamTablesRefreshFromTopPage('map-only:deferred-header');
+            if(btn){
+              btn.disabled = false;
+              btn.dataset.dbaBusy = '0';
+              btn.innerHTML = '戦況<br>情報';
+            }
+            return true;
+          }
+        }
+      }
+
       const topUrl = meta?.topUrl || makeTeambattleUrl({ m: mode });
       if(!doc) throw new Error('doc is null');
 
@@ -21804,6 +23143,103 @@ function avatarsKeyToMap(avatarsKey){
 
     let topUrl = meta?.topUrl || makeTeambattleUrl({ m: mode });
     try{
+      // RBでは /map/rb/static の軽量JSONスナップショットを優先し、
+      // 公式canvas/APIへ差分だけを流す。HTML全体の再取得・script再実行を避ける。
+      if(mode === 'rb' && meta?.preferLiveMapFastPath && meta?.snapshot){
+        const curSnap = getCurrentBattlemapSnapshot();
+        const newSnap = meta.snapshot;
+
+        if(curSnap.rows !== newSnap.rows || curSnap.cols !== newSnap.cols){
+          if(btn) btn.textContent = '全更新（サイズ差）…';
+          const applied = await applyRbLiveMapSnapshotFast(newSnap, 'battle-info-click:size-changed');
+          if(!applied){
+            throw new Error('rb live map size-changed refresh failed');
+          }
+          scheduleHeaderAndTeamTablesRefreshFromTopPage('battle-info-click:size-changed');
+          endBattlemapLayerTextFreeze();
+          if(btn){
+            btn.disabled = false;
+            btn.dataset.dbaBusy = '0';
+            btn.innerHTML = '戦況<br>情報';
+          }
+          return;
+        }
+
+        const changed = diffChangedCells(curSnap, newSnap);
+        const oldTexts = snapshotLayerTexts();
+        const applied = await applyRbLiveMapSnapshotFast(newSnap, 'battle-info-click:rb-live-map');
+        if(!applied){
+          throw new Error('rb live map fast refresh failed');
+        }
+        restoreLayerTextsFromSnapshot(oldTexts, buildAllowedLayerTextKeySet(newSnap));
+        scheduleHeaderAndTeamTablesRefreshFromTopPage('battle-info-click:deferred-header');
+
+        const priorityTargets = resolvePostTeamChallengePriorityTargets(
+          meta?.priorityTargets ?? meta?.priorityTarget
+        );
+        const detailJobs = buildPriorityDetailFetchJobs(
+          buildDetailFetchJobsForChangedCells(curSnap, newSnap, changed),
+          priorityTargets,
+          newSnap
+        );
+
+        if(changed.length === 0 && detailJobs.length === 0){
+          renderRbOriginalBorders(newSnap);
+          renderRbCapitalCrowns(newSnap);
+          renderCurrentCellMarker(newSnap);
+          endBattlemapLayerTextFreeze();
+          if(btn){
+            btn.disabled = false;
+            btn.dataset.dbaBusy = '0';
+            btn.innerHTML = '戦況<br>情報';
+          }
+          return;
+        }
+
+        if(detailJobs.length === 0){
+          renderRbOriginalBorders(newSnap);
+          renderRbCapitalCrowns(newSnap);
+          renderCurrentCellMarker(newSnap);
+          endBattlemapLayerTextFreeze();
+          if(btn){
+            btn.disabled = false;
+            btn.dataset.dbaBusy = '0';
+            btn.innerHTML = '戦況<br>情報';
+          }
+          return;
+        }
+
+        if(btn) btn.textContent = `差分更新中…(${detailJobs.length})`;
+
+        const CONCURRENCY = 12;
+        await mapLimit(detailJobs, CONCURRENCY, async (job, idx) => {
+          const { row, col } = job;
+          try{
+            const { holder, reg } = await fetchCellDetail(row, col);
+            rememberFetchedCellDetailText(newSnap, row, col, holder, reg);
+          }catch(_e){
+            setLayerCellText(row, col, `ERR\n(${row},${col})`);
+          }
+          if(btn && (idx % 10 === 0)){
+            const done = idx + 1;
+            btn.textContent = `差分更新中…(${done}/${detailJobs.length})`;
+          }
+          return true;
+        });
+
+        renderRbOriginalBorders(newSnap);
+        renderRbCapitalCrowns(newSnap);
+        renderCurrentCellMarker(newSnap);
+        endBattlemapLayerTextFreeze();
+
+        if(btn){
+          btn.disabled = false;
+          btn.dataset.dbaBusy = '0';
+          btn.innerHTML = '戦況<br>情報';
+        }
+        return;
+      }
+
       if(!doc) throw new Error('doc is null');
 
       // (2) 現在と最新を比較
@@ -21913,6 +23349,23 @@ function avatarsKeyToMap(avatarsKey){
       restoreLayerTextsFromSnapshot(oldTexts, buildAllowedLayerTextKeySet(newSnap));
 
       if(changed.length === 0){
+        const priorityTargets = resolvePostTeamChallengePriorityTargets(
+          meta?.priorityTargets ?? meta?.priorityTarget
+        );
+        const priorityJobs = buildPriorityDetailFetchJobs([], priorityTargets, newSnap);
+        if(priorityJobs.length > 0){
+          if(btn) btn.textContent = `最新クリック対象を更新中…(${priorityJobs.length})`;
+          await mapLimit(priorityJobs, 1, async (job) => {
+            const { row, col } = job;
+            try{
+              const { holder, reg } = await fetchCellDetail(row, col);
+              rememberFetchedCellDetailText(newSnap, row, col, holder, reg);
+            }catch(_e){
+              setLayerCellText(row, col, `ERR\n(${row},${col})`);
+            }
+            return true;
+          });
+        }
         {
           const snap = getCurrentBattlemapSnapshot();
           renderRbOriginalBorders(snap);
@@ -21928,7 +23381,14 @@ function avatarsKeyToMap(avatarsKey){
         return;
       }
 
-      const detailJobs = buildDetailFetchJobsForChangedCells(curSnap, newSnap, changed);
+      const priorityTargets = resolvePostTeamChallengePriorityTargets(
+        meta?.priorityTargets ?? meta?.priorityTarget
+      );
+      const detailJobs = buildPriorityDetailFetchJobs(
+        buildDetailFetchJobsForChangedCells(curSnap, newSnap, changed),
+        priorityTargets,
+        newSnap
+      );
 
       if(detailJobs.length === 0){
         {
@@ -21953,7 +23413,7 @@ function avatarsKeyToMap(avatarsKey){
         const { row, col } = job;
         try{
           const { holder, reg } = await fetchCellDetail(row, col);
-          setLayerCellText(row, col, buildLayerCellDisplayText(reg, holder, row, col));
+          rememberFetchedCellDetailText(newSnap, row, col, holder, reg);
         }catch(_e){
           setLayerCellText(row, col, `ERR\n(${row},${col})`);
         }
@@ -21991,6 +23451,18 @@ function avatarsKeyToMap(avatarsKey){
   }
 
   async function updateOnlyChangedCellsFromTopPage(){
+    if(mode === 'rb'){
+      const live = await fetchRbLiveMapSnapshotOnce('battle-info-click');
+      if(live && live.snapshot){
+        return updateOnlyChangedCellsFromFetchedDoc(null, {
+          topUrl: '/map/rb/static',
+          snapshot: live.snapshot,
+          showAlertOnError: true,
+          preferLiveMapFastPath: true
+        });
+      }
+    }
+
     const { topUrl, doc } = await fetchLatestTopPageDoc();
     const newSnap = getBattlemapSnapshotFromDoc(doc);
     return updateOnlyChangedCellsFromFetchedDoc(doc, {
