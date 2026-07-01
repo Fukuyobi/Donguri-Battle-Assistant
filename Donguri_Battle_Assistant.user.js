@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.2.2
+// @version      9.0.4.0
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.2.2';
+  const DBA_VERSION = '9.0.4.0';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -8108,13 +8108,97 @@
     return makeTeamChallengeUrl(mode);
   }
 
+  const DBA_RB_PARALLEL_ACTION = {
+    installed: false,
+    seq: 0
+  };
+
+  function openBattleResultModalWithNodeNonBlocking(nodeOrText, titleText){
+    const root = document.documentElement;
+    const hadPrev = Object.prototype.hasOwnProperty.call(root.dataset, 'dbaForceBattleResultFloat');
+    const prev = root.dataset.dbaForceBattleResultFloat;
+
+    root.dataset.dbaForceBattleResultFloat = '1';
+    try{
+      openBattleResultModalWithNode(nodeOrText, titleText);
+    }finally{
+      if(hadPrev){
+        root.dataset.dbaForceBattleResultFloat = prev;
+      }else{
+        delete root.dataset.dbaForceBattleResultFloat;
+      }
+    }
+  }
+
+  function extractBattleResultTextFromResponseBody(bodyText, fallbackText){
+    const src = String(bodyText || '');
+    if(!src.trim()) return String(fallbackText || '結果を表示できませんでした。');
+
+    if(/<\/?[a-z][\s\S]*>/i.test(src)){
+      try{
+        const doc = new DOMParser().parseFromString(src, 'text/html');
+        const block = extractBattleResultBlock(doc);
+        const text = block
+          ? sanitizeText(block.textContent || '')
+          : sanitizeText(doc.body ? doc.body.innerText : '');
+        return text || String(fallbackText || '結果を表示できませんでした。');
+      }catch(_e){
+        return sanitizeText(src) || String(fallbackText || '結果を表示できませんでした。');
+      }
+    }
+
+    return sanitizeText(src) || String(fallbackText || '結果を表示できませんでした。');
+  }
+
+  function installRbParallelActionHook(){
+    if(mode !== 'rb') return false;
+    if(DBA_RB_PARALLEL_ACTION.installed) return true;
+    DBA_RB_PARALLEL_ACTION.installed = true;
+
+    window.__DBA_RB_ACTION_HOOK = function(payload){
+      try{
+        const p = (payload && typeof payload === 'object') ? payload : {};
+        const kind = String(p.kind || '').trim().toLowerCase();
+        const row = Number(p.row);
+        const col = Number(p.col);
+        const targets = rememberLatestPostTeamChallengeTarget(
+          row,
+          col,
+          kind === 'build' ? 'official-rb-build' : 'official-rb-teamchallenge'
+        ) || [];
+
+        DBA_RB_PARALLEL_ACTION.seq += 1;
+
+        if(kind === 'teamchallenge'){
+          const resultText = extractBattleResultTextFromResponseBody(
+            p.responseText,
+            '戦闘結果を取得しました。'
+          );
+          openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
+          scheduleDeferredLocalOwnershipCountsUpdate('teamchallenge:official-rb-action');
+          scheduleTeamChallengeAutoSyncFromResultText(resultText, targets);
+          return true;
+        }
+
+        if(kind === 'build'){
+          scheduleDeferredLocalOwnershipCountsUpdate('build:official-rb-action');
+          scheduleBattlemapRefreshWithoutCellDetailsAfterTeamChallenge(targets).catch(() => {});
+          return true;
+        }
+      }catch(_e){}
+      return false;
+    };
+
+    return true;
+  }
+
   const DBA_POST_BATTLE_DIFF_SYNC = {
     running: false,
     pending: false
   };
 
   // 「/teamchallenge」後に優先同期するセル数の上限
-  const DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT = 4;
+  const DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT = 3;
 
   const DBA_POST_TEAMCHALLENGE_SYNC = {
     running: false,
@@ -8316,7 +8400,7 @@
   function getPostTeamChallengeSyncDelayMs(){
     // RBは1試合が短く、操作テンポも速いため短め。
     // ただし0ms連続実行は避け、/teamchallenge後のDOM反映・レイヤー同期をまとめる。
-    return mode === 'rb' ? 450 : 650;
+    return mode === 'rb' ? 150 : 450;
   }
 
   function requestPostTeamChallengeSync(kind, targets){
@@ -8651,7 +8735,7 @@
 
     // セル詳細を経由せず、teamchallenge に直接 POST
     // ※占領済み/空きセルの分岐はサーバー側が判断（＝「このエリアを捕らえよ」or「エリアに挑む」相当）
-    openBattleResultModalWithNode('戦闘結果を取得中…', 'ラピッド攻撃');
+    openBattleResultModalWithNodeNonBlocking('戦闘結果を取得中…', 'ラピッド攻撃');
 
     const fd = new FormData();
     fd.append('row', String(row));
@@ -8673,7 +8757,7 @@
     // 返却がHTMLではなく短文だけのケースにも対応（既存 battle-result と同じ方針）
     if(!ct.includes('text/html')){
       const resultText = bodyText || '結果を表示できませんでした。';
-      openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
+      openBattleResultModalWithNodeNonBlocking(resultText, 'ラピッド攻撃');
       scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
@@ -8683,13 +8767,13 @@
     if(block){
       const text = (doc.body && doc.body.innerText) ? doc.body.innerText : sanitizeText(block.textContent || '');
       const resultText = text || '結果を表示できませんでした。';
-      openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
+      openBattleResultModalWithNodeNonBlocking(resultText, 'ラピッド攻撃');
       scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
     {
       const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
-      openBattleResultModalWithNode(resultText, 'ラピッド攻撃');
+      openBattleResultModalWithNodeNonBlocking(resultText, 'ラピッド攻撃');
       scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
     }
   }
@@ -9317,7 +9401,7 @@
       return { r, c, x, y };
     }
 
-    const LP_MS = 1000;   // オート装備の長押し時間（ミリ秒）
+    const LP_MS = 700;   // オート装備の長押し時間（ミリ秒）
     let lpTimer = 0;
     let lpFired = false;
     let lpCtx = null;
@@ -10472,7 +10556,7 @@
 
     // クリック透過ON：dialog(top-layer)を使うと下のクリックが塞がる環境があるため、
     // ここでは dialog を開かず、透過フロートで表示する
-    const pass = loadBattleResultPassThrough();
+    const pass = loadBattleResultPassThrough() || document.documentElement.dataset.dbaForceBattleResultFloat === '1';
     if(pass){
       // dialogが開いていたら閉じる（底辺へ飛ぶ副作用も回避）
       try{ dlg.close(); }catch(_e){ dlg.removeAttribute('open'); }
@@ -11077,7 +11161,11 @@
     }
 
     // 戦闘結果モーダルを先に開いて「取得中…」を出す（体感をよくする）
-    openBattleResultModalWithNode('戦闘結果を取得中…', '戦闘結果');
+    if(isTeamChallengeAction){
+      openBattleResultModalWithNodeNonBlocking('戦闘結果を取得中…', '戦闘結果');
+    }else{
+      openBattleResultModalWithNode('戦闘結果を取得中…', '戦闘結果');
+    }
 
     let fetchUrl = url.toString();
     let init = { method, credentials:'include', cache:'no-store' };
@@ -11105,7 +11193,11 @@
     // 返却が HTML ではなく、短いテキスト（例：「リーダーになった」）だけのケースに備える
     if(!ct.includes('text/html')){
       const resultText = bodyText || '結果を表示できませんでした。';
-      openBattleResultModalWithNode(resultText, '戦闘結果');
+      if(isTeamChallengeAction){
+        openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
+      }else{
+        openBattleResultModalWithNode(resultText, '戦闘結果');
+      }
       scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       return;
     }
@@ -11121,7 +11213,11 @@
       // 中身が薄い場合は body のテキストを表示
       if(text.length < 8){
         const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
-        openBattleResultModalWithNode(resultText, '戦闘結果');
+        if(isTeamChallengeAction){
+          openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
+        }else{
+          openBattleResultModalWithNode(resultText, '戦闘結果');
+        }
         scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
         return;
       }
@@ -11130,15 +11226,23 @@
       // （DOMそのまま表示が崩れる場合があるので、まずはテキストで確実に見せる）
       {
         const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : imported.textContent;
-        openBattleResultModalWithNode(resultText, '戦闘結果');
-        scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTarget);
+        if(isTeamChallengeAction){
+          openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
+        }else{
+          openBattleResultModalWithNode(resultText, '戦闘結果');
+        }
+        scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
       }
       return;
     }
 
     {
       const resultText = (doc.body && doc.body.innerText) ? doc.body.innerText : '結果を表示できませんでした。';
-      openBattleResultModalWithNode(resultText, '戦闘結果');
+      if(isTeamChallengeAction){
+        openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
+      }else{
+        openBattleResultModalWithNode(resultText, '戦闘結果');
+      }
       scheduleTeamChallengeAutoSyncFromResultText(resultText, priorityTargets);
     }
   }
@@ -11217,7 +11321,7 @@
     if(document.documentElement.dataset.dbaCellIntercept === '1') return;
     document.documentElement.dataset.dbaCellIntercept = '1';
 
-    const LP_MS = 1000;   // オート装備の長押し時間（ミリ秒）
+    const LP_MS = 700;   // オート装備の長押し時間（ミリ秒）
     let lpTimer = 0;
     let lpFired = false;
     let lpCtx = null;
@@ -12970,8 +13074,8 @@
   //  - ラピッド攻撃ON: rapidAttackAt
   //  - ラピッド攻撃OFF: セル詳細モーダル
   // =========================
-  const DBA_AUTO_EQUIP_STAGGER_MS = 80;          // 武器・防具・ネックレスの /equip を送る間隔
-  const DBA_AUTO_EQUIP_POST_SUCCESS_WAIT_MS = 120; // 最初の一致判定後の短い安定待ち
+  const DBA_AUTO_EQUIP_STAGGER_MS = 40;          // 武器・防具・ネックレスの /equip を送る間隔
+  const DBA_AUTO_EQUIP_POST_SUCCESS_WAIT_MS = 60; // 一致判定後の短い安定待ち
 
   async function proceedAfterAutoEquip(row, col){
     if(loadRapidAttackEnabled()){
@@ -14651,22 +14755,17 @@
     let sawMissing = false;
     let lastError = null;
 
-    const pending = monitored.map((entry) => ({
-      token: entry.token,
-      promise: entry.promise.then((result) => ({
-        token: entry.token,
-        result
-      }))
-    }));
+    const settledResults = await Promise.all(
+      monitored.map((entry) => (
+        entry.promise.then((result) => ({
+          token: entry.token,
+          result
+        }))
+      ))
+    );
 
-    while(pending.length > 0){
-      const settled = await Promise.race(pending.map((entry) => entry.promise));
-      const idx = pending.findIndex((entry) => entry.token === settled.token);
-      if(idx >= 0){
-        pending.splice(idx, 1);
-      }
-
-      const r = settled.result;
+    for(const settled of settledResults){
+      const r = settled ? settled.result : null;
       if(!r) continue;
 
       if(r.error){
@@ -14678,7 +14777,23 @@
         sawMissing = true;
         continue;
       }
+    }
 
+    if(sawMissing){
+      return await handleMissingPresetDuringEquip(n);
+    }
+
+    const verifyTargets = settledResults
+      .filter((settled) => {
+        const r = settled ? settled.result : null;
+        return !!(r && !r.error && !r.missing && r.text);
+      })
+      // 送信順は 0:武器 → 1:防具 → 2:首。
+      // 最後に送った応答ほど、3部位すべての反映後HTMLである可能性が高い。
+      .sort((a, b) => Number(b.token) - Number(a.token));
+
+    for(const settled of verifyTargets){
+      const r = settled.result;
       const state = extractEquippedTripleFromResponseText(r.text);
       if(isEquippedTripleMatchedState(state, triple)){
         // ★「現在装備中として扱うプリセット名」を保存（オート装備の判定に使う）
@@ -14691,10 +14806,7 @@
       }
     }
 
-    if(sawMissing){
-      return await handleMissingPresetDuringEquip(n);
-    }
-    if(lastError){
+    if(lastError && verifyTargets.length === 0){
       throw lastError;
     }
 
@@ -19504,6 +19616,67 @@
       `function livePollAllowed(){
     return !livePollStopped && document.visibilityState === 'visible';
   }`
+    );
+
+    // RB公式アクションの非ブロッキング化:
+    // - 公式の attackTileAt()/placeBuilding() は実行中にタイル操作ボタンを全 disabled 化し、
+    //   成功時に window.location.reload() する。
+    // - DBAでは戦況更新・建築中・攻撃後同期中でも次の /teamchallenge を送れるよう、
+    //   disabled 化を無効化し、成功時は reload ではなく DBA の軽量同期へ流す。
+    patched = patched.replace(
+      /btnFort\.disabled = true;\s*btnRadar\.disabled = true;\s*btnAttack\.disabled = true;\s*btnInfo\.disabled = true;\s*btnCancel\.disabled = true;/g,
+      `try{ window.__DBA_RB_ACTION_BUSY_COUNT = (Number(window.__DBA_RB_ACTION_BUSY_COUNT || 0) + 1); }catch(_dbaBusyErr){}`
+    );
+
+    patched = patched.replace(
+      /btnFort\.disabled = false;\s*btnRadar\.disabled = false;\s*btnAttack\.disabled = false;\s*btnInfo\.disabled = false;\s*btnCancel\.disabled = false;/g,
+      `try{ window.__DBA_RB_ACTION_BUSY_COUNT = Math.max(0, Number(window.__DBA_RB_ACTION_BUSY_COUNT || 0) - 1); }catch(_dbaBusyErr){}`
+    );
+
+    patched = patched.replace(
+      `if(resp.ok && data && data.ok){
+        closeActionMenu();
+        window.location.reload();
+        return;
+      }`,
+      `if(resp.ok && data && data.ok){
+        closeActionMenu();
+        try{
+          if(window.__DBA_RB_ACTION_HOOK && typeof window.__DBA_RB_ACTION_HOOK === 'function'){
+            window.__DBA_RB_ACTION_HOOK({
+              kind: 'build',
+              buildingType: kind,
+              row: activeTile ? activeTile.r : null,
+              col: activeTile ? activeTile.c : null
+            });
+          }
+        }catch(_dbaActionHookErr){}
+        return;
+      }`
+    );
+
+    patched = patched.replace(
+      `if(resp.ok){
+        closeActionMenu();
+        window.location.reload();
+        return;
+      }`,
+      `let dbaResponseText = '';
+      try{ dbaResponseText = await resp.clone().text(); }catch(_dbaRespTextErr){}
+      if(resp.ok){
+        closeActionMenu();
+        try{
+          if(window.__DBA_RB_ACTION_HOOK && typeof window.__DBA_RB_ACTION_HOOK === 'function'){
+            window.__DBA_RB_ACTION_HOOK({
+              kind: 'teamchallenge',
+              row: target ? target.r : null,
+              col: target ? target.c : null,
+              responseText: dbaResponseText
+            });
+          }
+        }catch(_dbaActionHookErr){}
+        return;
+      }`
     );
 
     patched = patched.replace(
@@ -24961,6 +25134,7 @@ function avatarsKeyToMap(avatarsKey){
     try{ migrateSaveDataToGen3IfNeeded(); }catch(_e){}
 
     installOwnCapitalAttackGlobalGuards();
+    installRbParallelActionHook();
     try{
       const s = loadSettings();
       applyBaseFontSize(s?.ui?.baseFontPx);
