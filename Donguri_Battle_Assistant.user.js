@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.4.0
+// @version      9.0.6.2
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.4.0';
+  const DBA_VERSION = '9.0.6.2';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -2212,7 +2212,8 @@
       display: none !important;
     }
 
-    /* ===== 戦闘結果：透過ON時の表示は dialog を使わずフロートパネルで表示 ===== */
+    /* ===== 戦闘結果：透過ON時の表示用フロートパネル =====
+       通常時は非モーダル dialog、セル詳細が開いている時だけ showModal() で top-layer 前面へ出す */
     #dba-br-float {
       position: fixed;
       top: calc(var(--dba-fn-height) + 0px);  /* フロートパネルの表示位置（高さ） */
@@ -2228,10 +2229,15 @@
       background: rgba(248,248,248,0.55); /* 半透明 */
       color: #111;
       box-shadow: 0 12px 40px rgba(0,0,0,0.25);
-      z-index: 999995; /* fnbar(999999)より下、マップより上 */
+      z-index: 2147483647; /* 非モーダル時の保険。showModal()時はtop-layer側で前面化される */
       display: none;
       overflow: hidden;
+      box-sizing: border-box;
       pointer-events: none; /* まずは全体を透過 */
+    }
+    #dba-br-float::backdrop {
+      background: transparent;
+      pointer-events: none;
     }
     #dba-br-float[data-open="1"] { display: block; }
     #dba-br-float .dba-modal__top,
@@ -2239,10 +2245,84 @@
     #dba-br-float .dba-modal__bot {
       pointer-events: none; /* パネル自体は透過（ボタンのみ例外） */
     }
+    #dba-br-float .dba-modal__top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      column-gap: 8px;
+    }
+    .dba-br-float-title-wrap {
+      justify-self: start;
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+    #dba-br-float-title {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     #dba-br-float #dba-br-float-btn-option,
+    #dba-br-float #dba-br-float-tail-toggle,
     #dba-br-float .dba-btn-close {
       pointer-events: auto; /* Option/Closeだけ押せる */
       opacity: 1 !important; /* 不透過 */
+    }
+    /* 戦闘結果フロート：末尾2行表示の一時切替スライドボタン */
+    .dba-br-tail-toggle {
+      appearance: none;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      width: 9.4em;
+      min-width: 9.4em;
+      height: 2.05em;
+      margin: 2px 4px;
+      padding: 0 12px;
+      border: 2px solid #000;
+      border-radius: 999px;
+      background: #d8d8d8;
+      color: #111;
+      font-size: 0.78em;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+      box-shadow: inset 0 1px 2px rgba(255,255,255,0.7), 0 1px 2px rgba(0,0,0,0.16);
+      white-space: nowrap;
+      transition: background 0.15s ease, justify-content 0.15s ease, filter 0.15s ease;
+    }
+    .dba-br-tail-toggle::before {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 50%;
+      width: 1.25em;
+      height: 1.25em;
+      border: 2px solid #000;
+      border-radius: 999px;
+      background: #fff;
+      box-sizing: border-box;
+      transform: translateY(-50%);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.24);
+      transition: left 0.15s ease;
+    }
+    .dba-br-tail-toggle[data-tail2="1"] {
+      justify-content: flex-start;
+      background: #f08800;
+      color: #fff;
+    }
+    .dba-br-tail-toggle[data-tail2="1"]::before {
+      left: calc(100% - 1.25em - 7px);
+    }
+    .dba-br-tail-toggle:hover {
+      filter: brightness(0.97);
+    }
+    .dba-br-tail-toggle:active {
+      transform: translateY(1px);
     }
     /* フロート内は × は表示しない（透過要件に合わせる） */
     #dba-br-float .dba-btn-x { display:none !important; }
@@ -4216,6 +4296,15 @@
 
   const DBA_BATTLE_RESULT_AUTOCLOSE = {
     timer: 0
+  };
+
+  // 戦闘結果フロート専用の一時表示モード
+  // - null: オプション保存値（LS_BR_TAIL2_KEY）に従う
+  // - true: このページ滞在中だけ「末尾2行のみ」
+  // - false: このページ滞在中だけ「全行表示」
+  // ※保存しないため、タブ再読み込みやブラウザ再起動でオプション保存値へ戻る
+  const DBA_BR_FLOAT_TAIL2_OVERRIDE = {
+    value: null
   };
 
   const DBA_ROSTER_UI_STATE = {
@@ -7428,6 +7517,7 @@
     postBattle: {
       autoDiffSync: false,
       autoSyncMode: 'map',
+      keepCellDetailOpen: false,
       suppressOwnCapitalFriendlyFire: false
     },
     // ファンクションセクションの軽量化ボタン表示
@@ -7491,6 +7581,37 @@
     try{
       dbaStorageSetItem(LS_BR_TAIL2_KEY, on ? '1' : '0');
     }catch(_e){}
+  }
+
+  function getBattleResultTail2EnabledForFloat(){
+    if(DBA_BR_FLOAT_TAIL2_OVERRIDE.value == null){
+      return loadBattleResultTail2Enabled();
+    }
+    return !!DBA_BR_FLOAT_TAIL2_OVERRIDE.value;
+  }
+
+  function resetBattleResultFloatTail2Override(){
+    DBA_BR_FLOAT_TAIL2_OVERRIDE.value = null;
+    updateBattleResultFloatTail2Toggle();
+  }
+
+  function updateBattleResultFloatTail2Toggle(){
+    const btn = document.getElementById('dba-br-float-tail-toggle');
+    if(!(btn instanceof HTMLButtonElement)) return;
+
+    const on = getBattleResultTail2EnabledForFloat();
+    btn.dataset.tail2 = on ? '1' : '0';
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.textContent = on ? '2行のみ' : '全行表示';
+    btn.title = on
+      ? '戦闘ログを末尾2行のみ表示しています。この切替は保存されません。'
+      : '戦闘ログを全行表示しています。この切替は保存されません。';
+  }
+
+  function setBattleResultFloatTail2Override(on){
+    DBA_BR_FLOAT_TAIL2_OVERRIDE.value = !!on;
+    updateBattleResultFloatTail2Toggle();
+    updateBattleResultModalTextView();
   }
 
   function loadBattleResultAlign(){
@@ -8174,6 +8295,7 @@
             p.responseText,
             '戦闘結果を取得しました。'
           );
+          closeCellDetailModalForBattleResult();
           openBattleResultModalWithNodeNonBlocking(resultText, '戦闘結果');
           scheduleDeferredLocalOwnershipCountsUpdate('teamchallenge:official-rb-action');
           scheduleTeamChallengeAutoSyncFromResultText(resultText, targets);
@@ -8735,6 +8857,7 @@
 
     // セル詳細を経由せず、teamchallenge に直接 POST
     // ※占領済み/空きセルの分岐はサーバー側が判断（＝「このエリアを捕らえよ」or「エリアに挑む」相当）
+    closeCellDetailModalForBattleResult();
     openBattleResultModalWithNodeNonBlocking('戦闘結果を取得中…', 'ラピッド攻撃');
 
     const fd = new FormData();
@@ -8874,6 +8997,7 @@
       if(obj && obj.postBattle){
         out.postBattle.autoDiffSync = !!obj.postBattle.autoDiffSync;
         out.postBattle.autoSyncMode = sanitizePostBattleAutoSyncMode(obj.postBattle.autoSyncMode);
+        out.postBattle.keepCellDetailOpen = !!obj.postBattle.keepCellDetailOpen;
         if(typeof obj.postBattle.suppressOwnCapitalFriendlyFire !== 'undefined'){
           out.postBattle.suppressOwnCapitalFriendlyFire = !!obj.postBattle.suppressOwnCapitalFriendlyFire;
         }else if(typeof obj.postBattle.disableOwnCapitalProtection !== 'undefined'){
@@ -8944,6 +9068,7 @@
         postBattle: {
           autoDiffSync: !!s?.postBattle?.autoDiffSync,
           autoSyncMode: sanitizePostBattleAutoSyncMode(s?.postBattle?.autoSyncMode),
+          keepCellDetailOpen: !!s?.postBattle?.keepCellDetailOpen,
           suppressOwnCapitalFriendlyFire: !!s?.postBattle?.suppressOwnCapitalFriendlyFire
         },
         functionButtons: {
@@ -9615,6 +9740,36 @@
     lastCloseAt: 0      // Date.now()
   };
 
+  // 攻撃後の戦闘結果を出す前に、攻撃元のセル詳細 dialog を閉じる。
+  // - 戦闘結果は非ブロッキング表示（#dba-br-float）へ逃がす経路がある
+  // - しかし元の #dba-m-cell-detail が showModal の top-layer に残ると、
+  //   その backdrop がマップ操作を塞ぎ、「その場を押さないと次へ移動できない」ように見える
+  // - 再現しない環境でも、攻撃後はセル詳細を残す必要が薄いため、保険として閉じる
+  function closeCellDetailModalForBattleResult(){
+    try{
+      const settings = loadSettings();
+      if(settings?.postBattle?.keepCellDetailOpen){
+        return false;
+      }
+    }catch(_e){}
+
+    const dlg = document.getElementById('dba-m-cell-detail');
+    if(!dlg) return false;
+
+    const isOpen = !!(dlg.open || dlg.hasAttribute('open'));
+    if(!isOpen) return false;
+
+    DBA_CELL_DETAIL_GUARD.isOpen = false;
+    DBA_CELL_DETAIL_GUARD.lastCloseAt = Date.now();
+
+    try{
+      dlg.close();
+    }catch(_e){
+      dlg.removeAttribute('open');
+    }
+
+    return true;
+  }
 
   function buildCellDetailModal(){
     if(document.getElementById('dba-m-cell-detail')) return;
@@ -9850,22 +10005,38 @@
   }
 
   // =========================
-  // 戦闘結果：透過ON時の表示用フロートパネル（dialogを使わない）
-  //  - dialog(top-layer)が下のクリックを塞ぐ環境対策
+  // 戦闘結果：透過ON時の表示用フロートパネル
+  //  - 通常時は非モーダル dialog として扱い、従来のクリック透過に近い挙動を維持する
+  //  - セル詳細 dialog が開いている時だけ showModal() で top-layer の前面へ出す
   // =========================
   function ensureBattleResultFloatPanel(){
     if(document.getElementById('dba-br-float')) return;
-    const root = document.createElement('div');
+    const root = document.createElement('dialog');
     root.id = 'dba-br-float';
     root.dataset.open = '0';
+    root.dataset.dbaTopLayer = '0';
 
     const top = document.createElement('div');
     top.className = 'dba-modal__top';
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'dba-br-float-title-wrap';
 
     const title = document.createElement('div');
     title.className = 'dba-modal__title';
     title.id = 'dba-br-float-title';
     title.textContent = '戦闘結果';
+
+    const btnTailToggle = document.createElement('button');
+    btnTailToggle.type = 'button';
+    btnTailToggle.id = 'dba-br-float-tail-toggle';
+    btnTailToggle.className = 'dba-br-tail-toggle';
+    btnTailToggle.dataset.tail2 = '0';
+    btnTailToggle.setAttribute('aria-pressed', 'false');
+    btnTailToggle.textContent = '全行表示';
+
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(btnTailToggle);
 
     const center = document.createElement('div');
     center.className = 'dba-br-top-center';
@@ -9876,7 +10047,7 @@
     btnOpt.textContent = 'オプション';
     center.appendChild(btnOpt);
 
-    top.appendChild(title);
+    top.appendChild(titleWrap);
     top.appendChild(center);
 
     const mid = document.createElement('div');
@@ -9898,16 +10069,36 @@
     root.appendChild(bot);
     document.body.appendChild(root);
 
+    root.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeBattleResultFloatPanel();
+    });
+    root.addEventListener('close', () => {
+      root.dataset.open = '0';
+      root.dataset.dbaTopLayer = '0';
+    });
     btnOpt.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openBattleResultOptionsModal();
+    });
+    btnTailToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setBattleResultFloatTail2Override(!getBattleResultTail2EnabledForFloat());
     });
     btnClose.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       closeBattleResultFloatPanel();
     });
+
+    updateBattleResultFloatTail2Toggle();
+  }
+
+  function isCellDetailModalOpenForBattleResultFloat(){
+    const dlg = document.getElementById('dba-m-cell-detail');
+    return !!(dlg && (dlg.open || dlg.hasAttribute('open')));
   }
 
   function openBattleResultFloatPanelWithText(text, titleText){
@@ -9921,16 +10112,54 @@
     // 全文保持（末尾2行切替用）
     root.dataset.dbaBattleFullText = String(text ?? '');
 
-    const showText = loadBattleResultTail2Enabled() ? getLastTwoLines(root.dataset.dbaBattleFullText) : root.dataset.dbaBattleFullText;
+    const showText = getBattleResultTail2EnabledForFloat() ? getLastTwoLines(root.dataset.dbaBattleFullText) : root.dataset.dbaBattleFullText;
     box.textContent = '';
     const pre = document.createElement('div');
     pre.className = 'dba-battle-result-text';
     pre.textContent = showText;
     box.appendChild(pre);
+    updateBattleResultFloatTail2Toggle();
+
+    const useTopLayer = isCellDetailModalOpenForBattleResultFloat();
+    const wasTopLayer = root.dataset.dbaTopLayer === '1';
+
+    // 非モーダル表示中にセル詳細が開いた、またはその逆の場合は、
+    // dialog を一度閉じて show()/showModal() を切り替える。
+    if(root instanceof HTMLDialogElement && root.open && wasTopLayer !== useTopLayer){
+      try{
+        root.close();
+      }catch(_e){
+        root.removeAttribute('open');
+      }
+    }
 
     root.dataset.open = '1';
     const mid = root.querySelector('.dba-modal__mid'); if(mid instanceof HTMLElement) mid.dataset.dbaWheelScrollable = '1';
     applyBattleResultOptionsToFloat(); // 位置など（透過機能に紐づけない）
+
+    if(root instanceof HTMLDialogElement && !root.open){
+      if(useTopLayer){
+        try{
+          root.showModal();
+          root.dataset.dbaTopLayer = '1';
+        }catch(_e){
+          try{
+            root.show();
+          }catch(_e2){
+            root.setAttribute('open', '');
+          }
+          root.dataset.dbaTopLayer = '0';
+        }
+      }else{
+        try{
+          root.show();
+        }catch(_e){
+          root.setAttribute('open', '');
+        }
+        root.dataset.dbaTopLayer = '0';
+      }
+      root.dataset.open = '1';
+    }
 
     if(shouldStartBattleResultAutoClose(root.dataset.dbaBattleFullText)){
       scheduleBattleResultAutoClose();
@@ -9944,6 +10173,14 @@
     cancelBattleResultAutoCloseTimer();
     if(!root) return;
     root.dataset.open = '0';
+    root.dataset.dbaTopLayer = '0';
+      if(root instanceof HTMLDialogElement && root.open){
+      try{
+        root.close();
+      }catch(_e){
+        root.removeAttribute('open');
+      }
+    }
   }
 
   function getBattleResultFloatScrollableMid(){
@@ -10347,6 +10584,7 @@
     tail2Chk.addEventListener('change', (e) => {
       e.stopPropagation();
       saveBattleResultTail2Enabled(!!tail2Chk.checked);
+      resetBattleResultFloatTail2Override();
       updateBattleResultModalTextView();
     });
 
@@ -10516,30 +10754,48 @@
     const floatRoot = document.getElementById('dba-br-float');
     const floatBox  = document.getElementById('dba-br-float-box');
 
-    const full =
-      (floatRoot && floatRoot.dataset.open === '1' && floatRoot.dataset.dbaBattleFullText)
-        ? (floatRoot.dataset.dbaBattleFullText || '')
-        : (dlg ? (dlg.dataset.dbaBattleFullText || '') : '');
+    let updated = false;
 
-    // full が無い場合は何もしない（node表示やエラー文などに干渉しない）
-    if(!full) return;
-
-    const showText = on ? getLastTwoLines(full) : full;
-    // dialog側
-    if(dlg && box){
+    // 通常モーダル側：
+    // オプション保存値（LS_BR_TAIL2_KEY）に従って再描画する。
+    // node表示やエラー文など、全文保持が無い表示には干渉しない。
+    const modalFull = (dlg && dlg.dataset.dbaBattleFullText)
+      ? String(dlg.dataset.dbaBattleFullText || '')
+      : '';
+    if(modalFull && box){
+      const modalShowText = on ? getLastTwoLines(modalFull) : modalFull;
       box.textContent = '';
       const pre = document.createElement('div');
       pre.className = 'dba-battle-result-text';
-      pre.textContent = showText;
+      pre.textContent = modalShowText;
       box.appendChild(pre);
+      updated = true;
     }
-    // float側
-    if(floatRoot && floatRoot.dataset.open === '1' && floatBox){
+
+    // フロート側：
+    // フロート専用の一時上書き値（DBA_BR_FLOAT_TAIL2_OVERRIDE）に従って、
+    // 現在表示中のログを即座に再描画する。
+    const floatFull = (
+      floatRoot &&
+      floatRoot.dataset.open === '1' &&
+      floatRoot.dataset.dbaBattleFullText
+    )
+      ? String(floatRoot.dataset.dbaBattleFullText || '')
+      : '';
+    if(floatFull && floatBox){
+      const floatShowText = getBattleResultTail2EnabledForFloat()
+        ? getLastTwoLines(floatFull)
+        : floatFull;
       floatBox.textContent = '';
       const pre2 = document.createElement('div');
       pre2.className = 'dba-battle-result-text';
-      pre2.textContent = showText;
+      pre2.textContent = floatShowText;
       floatBox.appendChild(pre2);
+      updated = true;
+    }
+
+    if(updated){
+      updateBattleResultFloatTail2Toggle();
     }
   }
 
@@ -11162,6 +11418,7 @@
 
     // 戦闘結果モーダルを先に開いて「取得中…」を出す（体感をよくする）
     if(isTeamChallengeAction){
+      closeCellDetailModalForBattleResult();
       openBattleResultModalWithNodeNonBlocking('戦闘結果を取得中…', '戦闘結果');
     }else{
       openBattleResultModalWithNode('戦闘結果を取得中…', '戦闘結果');
@@ -23934,6 +24191,22 @@ function avatarsKeyToMap(avatarsKey){
       const body = document.createElement('div');
       body.className = 'dba-setting-subgroup';
 
+      const labKeepCellDetail = document.createElement('label');
+      labKeepCellDetail.className = 'dba-setting-checkline';
+
+      const inputKeepCellDetail = document.createElement('input');
+      inputKeepCellDetail.type = 'checkbox';
+      inputKeepCellDetail.checked = !!settings?.postBattle?.keepCellDetailOpen;
+      inputKeepCellDetail.setAttribute('data-post-battle-keep-cell-detail-open', '1');
+
+      const txtKeepCellDetail = document.createElement('span');
+      txtKeepCellDetail.className = 'dba-setting-checktext';
+      txtKeepCellDetail.textContent = '戦闘後に「セル詳細」画面を自動的に閉じない。';
+
+      labKeepCellDetail.appendChild(inputKeepCellDetail);
+      labKeepCellDetail.appendChild(txtKeepCellDetail);
+      body.appendChild(labKeepCellDetail);
+
       const labAutoDiff = document.createElement('label');
       labAutoDiff.className = 'dba-setting-checkline';
 
@@ -24564,6 +24837,7 @@ function avatarsKeyToMap(avatarsKey){
         hc: { width: 30, height: 30 },
         l:  { width: 30, height: 30 },
         baseFontPx: getDefaultBaseFontPxForDevice(),
+        keepCellDetailOpen: false,
         postBattleAutoDiff: false,
         postBattleAutoSyncMode: 'map',
         suppressOwnCapitalFriendlyFire: false,
@@ -24589,6 +24863,8 @@ function avatarsKeyToMap(avatarsKey){
       }
       const pb = dlg.querySelector('input[type="checkbox"][data-post-battle-auto-diff="1"]');
       if(pb) out.postBattleAutoDiff = !!pb.checked;
+      const keepCellDetail = dlg.querySelector('input[type="checkbox"][data-post-battle-keep-cell-detail-open="1"]');
+      if(keepCellDetail) out.keepCellDetailOpen = !!keepCellDetail.checked;
       const pbMode = dlg.querySelector('input[type="radio"][data-post-battle-auto-sync-mode="1"]:checked');
       if(pbMode){
         out.postBattleAutoSyncMode = sanitizePostBattleAutoSyncMode(pbMode.value);
@@ -24675,6 +24951,10 @@ function avatarsKeyToMap(avatarsKey){
       if(pb){
         pb.checked = !!s?.postBattle?.autoDiffSync;
       }
+      const keepCellDetail = dlg.querySelector('input[type="checkbox"][data-post-battle-keep-cell-detail-open="1"]');
+      if(keepCellDetail){
+        keepCellDetail.checked = !!s?.postBattle?.keepCellDetailOpen;
+      }
       {
         const postBattleAutoSyncMode = sanitizePostBattleAutoSyncMode(s?.postBattle?.autoSyncMode);
         for(const inp of dlg.querySelectorAll('input[type="radio"][data-post-battle-auto-sync-mode="1"]')){
@@ -24729,6 +25009,7 @@ function avatarsKeyToMap(avatarsKey){
       cur.cellSize.l.width   = sanitizeCellPx(v.l.width,   DEFAULT_SETTINGS.cellSize.l.width);
       cur.cellSize.l.height  = sanitizeCellPx(v.l.height,  DEFAULT_SETTINGS.cellSize.l.height);
       cur.ui.baseFontPx = sanitizeBaseFontPx(v.baseFontPx, getDefaultBaseFontPxForDevice());
+      cur.postBattle.keepCellDetailOpen = !!v.keepCellDetailOpen;
       cur.postBattle.autoDiffSync = !!v.postBattleAutoDiff;
       cur.postBattle.autoSyncMode = sanitizePostBattleAutoSyncMode(v.postBattleAutoSyncMode);
       cur.postBattle.suppressOwnCapitalFriendlyFire = !!v.suppressOwnCapitalFriendlyFire;
