@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.6.2
+// @version      9.0.7.0
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.6.2';
+  const DBA_VERSION = '9.0.7.0';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -10969,12 +10969,14 @@
     }
   }
 
-  function openRosterResultModalWithNode(nodeOrText, titleText){
+  function openRosterResultModalWithNode(nodeOrText, titleText, options){
     buildRosterResultModal();
     const dlg = document.getElementById('dba-m-roster-result');
     const box = document.getElementById('dba-roster-result-box');
     const title = dlg ? dlg.querySelector('.dba-modal__title') : null;
     if(!dlg || !box) return;
+    const opt = (options && typeof options === 'object') ? options : {};
+    const nonBlocking = !!opt.nonBlocking;
     setRosterResultModalAlertMode(false);
     if(title) title.textContent = titleText || '装備変更結果';
 
@@ -10985,6 +10987,16 @@
     }catch(_e){}
     dlg.dataset.dbaAutoCloseTimer = '0';
 
+    // showModal() 済みの dialog を show() に切り替える場合があるため、
+    // 表示方式を変える前にいったん閉じる。
+    if(dlg.open || dlg.hasAttribute('open')){
+      try{
+        dlg.close();
+      }catch(_e){
+        dlg.removeAttribute('open');
+      }
+    }
+    dlg.dataset.dbaNonBlocking = nonBlocking ? '1' : '0';
 
     box.textContent = '';
     if(typeof nodeOrText === 'string'){
@@ -11001,7 +11013,19 @@
       box.appendChild(pre);
     }
 
-    try{ dlg.showModal(); }catch(_e){ dlg.setAttribute('open',''); }
+    if(nonBlocking){
+      try{
+        dlg.show();
+      }catch(_e){
+        dlg.setAttribute('open','');
+      }
+    }else{
+      try{
+        dlg.showModal();
+      }catch(_e){
+        dlg.setAttribute('open','');
+      }
+    }
 
     // ★オート装備の「装備切替完了」通知だけ、設定に応じて自動クローズ
     try{
@@ -13367,7 +13391,7 @@
       saveAutoEquipLastPreset(nm);
       await new Promise((resolve) => setTimeout(resolve, DBA_AUTO_EQUIP_POST_SUCCESS_WAIT_MS));
       closeRosterProgressAlertModal();
-      openRosterResultModalWithNode(`装備切替完了\n${nm}`, 'オート装備');
+      openRosterResultModalWithNode(`装備切替完了\n${nm}`, 'オート装備', { nonBlocking: true });
     }catch(_e){
       closeRosterProgressAlertModal();
       openRosterResultModalWithNode(`装備切替に失敗しました\n${nm}`, 'オート装備');
