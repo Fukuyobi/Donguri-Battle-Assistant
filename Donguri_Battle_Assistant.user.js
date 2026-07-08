@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.8.0
+// @version      9.0.8.1
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.8.0';
+  const DBA_VERSION = '9.0.8.1';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -8234,30 +8234,15 @@
     seq: 0
   };
 
-  function shouldForceBattleResultFloat(){
-    // dbaForceBattleResultFloat は、RBモードで /teamchallenge とマップ更新を
-    // 並行させるための内部強制フラグ。
-    // HC / Ladder でこれを有効にすると、戦闘結果オプションの
-    // 「クリック判定を透過させる」がOFFでも透過フロート表示になってしまうため、
-    // 強制フロートはRBモード限定にする。
-    return mode === 'rb' && document.documentElement.dataset.dbaForceBattleResultFloat === '1';
-  }
-
   function openBattleResultModalWithNodeNonBlocking(nodeOrText, titleText){
-    const root = document.documentElement;
-    const hadPrev = Object.prototype.hasOwnProperty.call(root.dataset, 'dbaForceBattleResultFloat');
-    const prev = root.dataset.dbaForceBattleResultFloat;
-
-    root.dataset.dbaForceBattleResultFloat = '1';
-    try{
-      openBattleResultModalWithNode(nodeOrText, titleText);
-    }finally{
-      if(hadPrev){
-        root.dataset.dbaForceBattleResultFloat = prev;
-      }else{
-        delete root.dataset.dbaForceBattleResultFloat;
-      }
-    }
+    // v9.0.8.1:
+    // 以前はRBの並行処理中に戦闘結果を強制的に透過フロート表示していたが、
+    // これにより「戦闘結果：オプション」の
+    // 『「Close」「オプション」ボタン以外はクリック判定を透過させる。』
+    // がOFFでも透過してしまっていた。
+    // 以後は全モード共通で、透過するかどうかは保存済みオプション
+    // loadBattleResultPassThrough() のみで判定する。
+    openBattleResultModalWithNode(nodeOrText, titleText);
   }
 
   function extractBattleResultTextFromResponseBody(bodyText, fallbackText){
@@ -10820,10 +10805,10 @@
     applyBattleResultOptionsToModal();
 
     // クリック透過ON：
-    // - ユーザー設定ONなら全モードで透過フロート表示
-    // - 内部強制フロートはRBモード限定
-    //   （HC / Ladder ではチェックOFF時に通常dialog表示へ戻す）
-    const pass = loadBattleResultPassThrough() || shouldForceBattleResultFloat();
+    // 「戦闘結果：オプション」の保存値だけに従う。
+    // RBのラピッド攻撃／公式RB action hookなど、NonBlocking経由の表示でも
+    // チェックOFFなら通常dialog表示、チェックONなら透過フロート表示にする。
+    const pass = loadBattleResultPassThrough();
     if(pass){
       // dialogが開いていたら閉じる（底辺へ飛ぶ副作用も回避）
       try{ dlg.close(); }catch(_e){ dlg.removeAttribute('open'); }
