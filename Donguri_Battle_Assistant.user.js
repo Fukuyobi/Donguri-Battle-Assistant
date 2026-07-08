@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.7.0
+// @version      9.0.8.0
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.7.0';
+  const DBA_VERSION = '9.0.8.0';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -8234,6 +8234,15 @@
     seq: 0
   };
 
+  function shouldForceBattleResultFloat(){
+    // dbaForceBattleResultFloat は、RBモードで /teamchallenge とマップ更新を
+    // 並行させるための内部強制フラグ。
+    // HC / Ladder でこれを有効にすると、戦闘結果オプションの
+    // 「クリック判定を透過させる」がOFFでも透過フロート表示になってしまうため、
+    // 強制フロートはRBモード限定にする。
+    return mode === 'rb' && document.documentElement.dataset.dbaForceBattleResultFloat === '1';
+  }
+
   function openBattleResultModalWithNodeNonBlocking(nodeOrText, titleText){
     const root = document.documentElement;
     const hadPrev = Object.prototype.hasOwnProperty.call(root.dataset, 'dbaForceBattleResultFloat');
@@ -8320,7 +8329,7 @@
   };
 
   // 「/teamchallenge」後に優先同期するセル数の上限
-  const DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT = 3;
+  const DBA_POST_TEAMCHALLENGE_PRIORITY_LIMIT = 6;
 
   const DBA_POST_TEAMCHALLENGE_SYNC = {
     running: false,
@@ -8522,7 +8531,7 @@
   function getPostTeamChallengeSyncDelayMs(){
     // RBは1試合が短く、操作テンポも速いため短め。
     // ただし0ms連続実行は避け、/teamchallenge後のDOM反映・レイヤー同期をまとめる。
-    return mode === 'rb' ? 150 : 450;
+    return mode === 'rb' ? 550 : 1000;
   }
 
   function requestPostTeamChallengeSync(kind, targets){
@@ -10810,9 +10819,11 @@
     // オプション（配置/透過）を反映
     applyBattleResultOptionsToModal();
 
-    // クリック透過ON：dialog(top-layer)を使うと下のクリックが塞がる環境があるため、
-    // ここでは dialog を開かず、透過フロートで表示する
-    const pass = loadBattleResultPassThrough() || document.documentElement.dataset.dbaForceBattleResultFloat === '1';
+    // クリック透過ON：
+    // - ユーザー設定ONなら全モードで透過フロート表示
+    // - 内部強制フロートはRBモード限定
+    //   （HC / Ladder ではチェックOFF時に通常dialog表示へ戻す）
+    const pass = loadBattleResultPassThrough() || shouldForceBattleResultFloat();
     if(pass){
       // dialogが開いていたら閉じる（底辺へ飛ぶ副作用も回避）
       try{ dlg.close(); }catch(_e){ dlg.removeAttribute('open'); }
