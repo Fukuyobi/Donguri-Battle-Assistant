@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.8.1
+// @version      9.0.9.0
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.8.1';
+  const DBA_VERSION = '9.0.9.0';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -2229,7 +2229,7 @@
       background: rgba(248,248,248,0.55); /* 半透明 */
       color: #111;
       box-shadow: 0 12px 40px rgba(0,0,0,0.25);
-      z-index: 2147483647; /* 非モーダル時の保険。showModal()時はtop-layer側で前面化される */
+      z-index: 2147483647 !important; /* 非モーダル時もバトルマップや公式CSSより前面へ固定 */
       display: none;
       overflow: hidden;
       box-sizing: border-box;
@@ -3061,6 +3061,15 @@
       background: #f3d0d0;
     }
 
+    /* ===== 装備変更結果：非ブロッキング表示の前面化 =====
+        オート装備完了時は dialog.show() で表示されるため、top-layerには入らない。
+        バトルマップレイヤーより確実に前面へ出しつつ、背後のマップ操作は維持する。 */
+    #dba-m-roster-result.dba-m-std[data-dba-non-blocking="1"] {
+      position: fixed;
+      z-index: 2147483646 !important;
+      isolation: isolate;
+    }
+
     /* 装備変更結果（ロスター）テキスト表示 */
     .dba-roster-result-text {
       white-space: pre-wrap;
@@ -3550,7 +3559,7 @@
     /* ===== オート装備（候補ポップアップ / 設定） ===== */
     #dba-auto-equip-pop {
       position: fixed;
-      z-index: 999998; /* fnbar(999999)より下 */
+      z-index: 2147483646 !important; /* バトルマップより前面。非モーダルなので背後操作は維持 */
       display: none;
       font-size: var(--dba-base-font-size);
       min-width: 180px;
