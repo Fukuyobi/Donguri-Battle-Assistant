@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.9.0
+// @version      9.0.12.0
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.9.0';
+  const DBA_VERSION = '9.0.12.0';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -1189,6 +1189,103 @@
 
   // teambattle 対象モード（hc / l / rb）と arena 以外では動かさない
   if (!isArenaPage && !['hc', 'l', 'rb'].includes(mode)) return;
+
+  // =========================
+  // チームバトル：タブ／アプリ復帰時の意図しないページスクロールを抑止
+  //  - 復帰直前の位置を保存し、focus / visibilitychange / pageshow 後に復元する
+  //  - ブラウザのフォーカス復元、スクロールアンカー、DBAの再同期・再計測が
+  //    同時に走った場合でも、ユーザーが離席前に見ていた位置を維持する
+  // =========================
+  const DBA_RESUME_SCROLL_GUARD = {
+    installed: false,
+    x: 0,
+    y: 0,
+    hasSnapshot: false,
+    restoring: false,
+    restoreToken: 0,
+    timer: 0
+  };
+
+  function captureResumeScrollPosition(){
+    if(isArenaPage) return;
+    if(DBA_RESUME_SCROLL_GUARD.restoring) return;
+    DBA_RESUME_SCROLL_GUARD.x = Number(window.scrollX || 0);
+    DBA_RESUME_SCROLL_GUARD.y = Number(window.scrollY || 0);
+    DBA_RESUME_SCROLL_GUARD.hasSnapshot = true;
+  }
+
+  function restoreResumeScrollPosition(){
+    if(isArenaPage) return;
+    if(!DBA_RESUME_SCROLL_GUARD.hasSnapshot) return;
+
+    const token = ++DBA_RESUME_SCROLL_GUARD.restoreToken;
+    const x = Number(DBA_RESUME_SCROLL_GUARD.x || 0);
+    const y = Number(DBA_RESUME_SCROLL_GUARD.y || 0);
+    DBA_RESUME_SCROLL_GUARD.restoring = true;
+
+    if(DBA_RESUME_SCROLL_GUARD.timer){
+      clearTimeout(DBA_RESUME_SCROLL_GUARD.timer);
+      DBA_RESUME_SCROLL_GUARD.timer = 0;
+    }
+
+    const apply = () => {
+      if(token !== DBA_RESUME_SCROLL_GUARD.restoreToken) return;
+      try{ window.scrollTo(x, y); }catch(_e){}
+    };
+
+    apply();
+    requestAnimationFrame(() => {
+      apply();
+      requestAnimationFrame(() => {
+        apply();
+        DBA_RESUME_SCROLL_GUARD.timer = window.setTimeout(() => {
+          DBA_RESUME_SCROLL_GUARD.timer = 0;
+          apply();
+          if(token === DBA_RESUME_SCROLL_GUARD.restoreToken){
+            DBA_RESUME_SCROLL_GUARD.restoring = false;
+            captureResumeScrollPosition();
+          }
+        }, 120);
+      });
+    });
+  }
+
+  function installResumeScrollGuard(){
+    if(isArenaPage) return false;
+    if(DBA_RESUME_SCROLL_GUARD.installed) return true;
+    DBA_RESUME_SCROLL_GUARD.installed = true;
+
+    captureResumeScrollPosition();
+
+    window.addEventListener('scroll', () => {
+      if(document.visibilityState === 'hidden') return;
+      captureResumeScrollPosition();
+    }, { passive:true });
+
+    window.addEventListener('blur', () => {
+      captureResumeScrollPosition();
+    }, true);
+
+    document.addEventListener('visibilitychange', () => {
+      if(document.visibilityState === 'hidden'){
+        captureResumeScrollPosition();
+      }else{
+        restoreResumeScrollPosition();
+      }
+    }, true);
+
+    window.addEventListener('focus', () => {
+      restoreResumeScrollPosition();
+    }, true);
+
+    window.addEventListener('pageshow', () => {
+      restoreResumeScrollPosition();
+    }, true);
+
+    return true;
+  }
+
+  installResumeScrollGuard();
 
   // ============================================================
   // ▽ここから▽ CSS 定義ゾーン（集中管理）
@@ -9252,11 +9349,24 @@
     return Math.max(0, Math.floor((window.innerWidth || 0) * 0.96));
   }
 
+  function getBattlemapAvailableHeightPxForMode(modeKey){
+    if(modeKey !== 'rb') return 0;
+
+    const viewportH = Number(window.visualViewport?.height || window.innerHeight || 0);
+    if(!(viewportH > 0)) return 0;
+
+    // 公式 Red vs Blue マップの computeCell() と同じく、
+    // 表示領域の高さの 90% をフィット上限として扱う。
+    return Math.max(0, Math.floor(viewportH * 0.90));
+  }
+
   function getBattlemapFittedCellSizeForMode(modeKey, settingsObj){
     const base = getEffectiveCellSizeForMode(modeKey, settingsObj);
     const cols = Math.max(0, getBattlemapColumnCountForMode(modeKey));
+    const rows = (modeKey === 'rb') ? cols : 0;
     const gapPx = Math.max(0, getBattlemapColumnGapPxForMode(modeKey));
     const availW = Math.max(0, getBattlemapAvailableWidthPx(modeKey));
+    const availH = Math.max(0, getBattlemapAvailableHeightPxForMode(modeKey));
 
     if(cols <= 0 || availW <= 0){
       return {
@@ -9267,7 +9377,16 @@
     }
 
     const naturalW = (cols * base.width) + (Math.max(0, cols - 1) * gapPx);
-    if(naturalW <= 0 || naturalW <= availW){
+    const naturalH = (rows > 0)
+      ? ((rows * base.height) + (Math.max(0, rows - 1) * gapPx))
+      : 0;
+    const widthScale = (naturalW > 0) ? (availW / naturalW) : 1;
+    const heightScale = (modeKey === 'rb' && naturalH > 0 && availH > 0)
+      ? (availH / naturalH)
+      : 1;
+    const fitScale = Math.max(0.1, Math.min(1, widthScale, heightScale));
+
+    if(naturalW <= 0 || fitScale >= 1){
       return {
         width: base.width,
         height: base.height,
@@ -9275,7 +9394,7 @@
       };
     }
 
-    const scale = Math.max(0.1, Math.min(1, availW / naturalW));
+    const scale = fitScale;
     const fittedW = Math.max(8, Math.floor(base.width * scale));
     const fittedH = Math.max(8, Math.floor(base.height * scale));
     const actualScale = Math.max(
@@ -12402,6 +12521,46 @@
 
     if(document.body) start();
     else document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+
+  const DBA_RB_VIEWPORT_REFIT = {
+    token: 0,
+    timer1: 0,
+    timer2: 0
+  };
+
+  function scheduleRbBattlemapViewportRefit(){
+    if(mode !== 'rb') return false;
+
+    const token = ++DBA_RB_VIEWPORT_REFIT.token;
+    if(DBA_RB_VIEWPORT_REFIT.timer1){
+      clearTimeout(DBA_RB_VIEWPORT_REFIT.timer1);
+      DBA_RB_VIEWPORT_REFIT.timer1 = 0;
+    }
+    if(DBA_RB_VIEWPORT_REFIT.timer2){
+      clearTimeout(DBA_RB_VIEWPORT_REFIT.timer2);
+      DBA_RB_VIEWPORT_REFIT.timer2 = 0;
+    }
+
+    const apply = () => {
+      if(token !== DBA_RB_VIEWPORT_REFIT.token) return;
+      if(!document.getElementById('gridWrap')) return;
+      applyCurrentModeScale();
+      scheduleBattlemapLayerSync();
+    };
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(apply);
+    });
+    DBA_RB_VIEWPORT_REFIT.timer1 = window.setTimeout(() => {
+      DBA_RB_VIEWPORT_REFIT.timer1 = 0;
+      apply();
+    }, 90);
+    DBA_RB_VIEWPORT_REFIT.timer2 = window.setTimeout(() => {
+      DBA_RB_VIEWPORT_REFIT.timer2 = 0;
+      apply();
+    }, 260);
+    return true;
   }
 
   function applyCurrentModeScale(){
@@ -19640,6 +19799,7 @@
     renderCurrentCellMarker(newSnap);
     renderOwnCapitalRapidAttackBlockers(newSnap);
     scheduleBattlemapLayerSync();
+    scheduleRbBattlemapViewportRefit();
     scheduleDeferredLocalOwnershipCountsUpdate(String(sourceLabel || 'rb-live-map-fast'));
 
     return {
@@ -20772,6 +20932,7 @@
         window.scrollTo(sx, sy);
 
         applyCurrentModeScale();
+        scheduleRbBattlemapViewportRefit();
         if(mode === 'rb') ensureRbPointerFix();
         scheduleBattlemapLayerSync();
         scheduleDeferredLocalOwnershipCountsUpdate('battlemap:fetched-doc-api');
@@ -20797,6 +20958,7 @@
       window.scrollTo(sx, sy);
 
       applyCurrentModeScale();
+      scheduleRbBattlemapViewportRefit();
       if(mode === 'rb') ensureRbPointerFix();
       scheduleBattlemapLayerSync();
 
@@ -25451,61 +25613,206 @@ function avatarsKeyToMap(avatarsKey){
       applyCurrentCellMarkerThemeFromSettings(s);
     }catch(_e){}
 
-    const doInsert = async () => {
-      // 二重挿入防止
-      if (document.getElementById('dba-function-section')) return;
-
-      // 保存設定に従って、元の<header>表示を反映
-      reapplyOriginalHeaderVisibilityFromSettings();
-
-      document.documentElement.classList.add('dba-has-fnbar');
-
-      const bar = buildFunctionSection();
-
-      const header = document.querySelector('header');
-      if (header && header.parentNode) {
-        header.parentNode.insertBefore(bar, header);
-      } else {
-        // header が見つからない場合は body 先頭に
-        (document.body || document.documentElement).insertBefore(bar, (document.body || document.documentElement).firstChild);
-      }
-
-      // fnbar 最上段に、header由来の情報ブロックを設置
-      const hh = bar.querySelector('#dba-fn-header-host');
-      ensureFnHeaderInfoContainer(hh || null);
-      renderFnHeaderInfo();
-      await updateRbUnifiedRegDisplay(true);
-
-      // 初回表示時点では「保有地域数」のローカル算出更新を行わない。
-      // 戦況情報や /teamchallenge 系アクション後に、描画安定を待って単発更新する。
-
-      // fnbar 内（上段）に、トップページ同期の「経過時間」プログレスバーを設置
-      const ph = bar.querySelector('#dba-fn-progress-host');
-      ensureTopProgressContainer(ph || null);
-      startTopProgressTicker();
-      setLightRefreshButtonBusyState(!!DBA_LIGHT_REFRESH_STATE.running);
-
-      // fnbar高さを実測して反映（初回 + 画面変化に追従）
-      scheduleFnbarHeightSync();
-      window.addEventListener('resize', scheduleFnbarHeightSync, { passive: true });
-      window.addEventListener('orientationchange', scheduleFnbarHeightSync, { passive: true });
-
-      // バトルマップのセルスケール（保存値）を適用
-      waitAndApplyScale();
-      // 透明レイヤーを初期化（バトルマップ追従）
-      initBattlemapLayer();
-      // セルクリックで詳細モーダル（遷移抑止）
-      initBattlemapCellClickIntercept();
-      // 後から<header>が差し替わっても表示設定を再適用
-      startOriginalHeaderVisibilityObserver();
+    // =========================
+    // ファンクションセクション初期化状態
+    //  - スマートフォン版Tampermonkeyでは、document-startからの通常再読込時に
+    //    DOMContentLoadedの単発初期化だけでは取りこぼす場合がある。
+    //  - DOMContentLoaded / load / pageshow / 遅延再試行の各経路から
+    //    同じ初期化関数を安全に呼び出せるようにする。
+    //  - 公式ページ側の後処理でセクションが失われた場合も再生成する。
+    // =========================
+    const DBA_FNBAR_BOOT_STATE = {
+      inserting: false,
+      initializedOnce: false,
+      lifecycleEventsBound: false,
+      observer: null,
+      retryTimers: []
     };
 
-    // document-start なので body がまだ無いことがある：DOM 構築を待つ
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', doInsert, { once: true });
-    } else {
-      doInsert();
+    const doInsert = async () => {
+      // document-start直後はbodyがまだ存在しない。
+      // この段階でdocumentElementへ仮挿入すると、後続のHTMLパースや
+      // ブラウザのDOM補正で要素が失われる可能性があるため、body完成まで待つ。
+      const bodyRoot = document.body;
+      if(!bodyRoot){
+        return false;
+      }
+
+      // 同時に複数の再試行経路が発火しても、生成処理を重複させない。
+      if(DBA_FNBAR_BOOT_STATE.inserting){
+        return false;
+      }
+
+      const existingBar = document.getElementById('dba-function-section');
+      if(existingBar){
+        // 既存セクションがbody直下以外へ移動していた場合は元へ戻す。
+        if(existingBar.parentElement !== bodyRoot){
+          bodyRoot.insertBefore(existingBar, bodyRoot.firstChild);
+        }
+
+        document.documentElement.classList.add('dba-has-fnbar');
+        reapplyOriginalHeaderVisibilityFromSettings();
+        scheduleFnbarHeightSync();
+        return true;
+      }
+
+      DBA_FNBAR_BOOT_STATE.inserting = true;
+
+      try{
+        // 保存設定に従って、元の<header>表示を反映
+        reapplyOriginalHeaderVisibilityFromSettings();
+
+        document.documentElement.classList.add('dba-has-fnbar');
+
+        const bar = buildFunctionSection();
+
+        // DBAの固定UIは、公式ページ側のDOM構造やHTML補正の影響を
+        // 受けにくいよう、必ずbody直下の先頭へ挿入する。
+        bodyRoot.insertBefore(bar, bodyRoot.firstChild);
+
+        // fnbar 最上段に、header由来の情報ブロックを設置
+        const hh = bar.querySelector('#dba-fn-header-host');
+        ensureFnHeaderInfoContainer(hh || null);
+        renderFnHeaderInfo();
+        await updateRbUnifiedRegDisplay(true);
+
+        // 初回表示時点では「保有地域数」のローカル算出更新を行わない。
+        // 戦況情報や /teamchallenge 系アクション後に、描画安定を待って単発更新する。
+
+        // fnbar 内（上段）に、トップページ同期の「経過時間」プログレスバーを設置
+        const ph = bar.querySelector('#dba-fn-progress-host');
+        ensureTopProgressContainer(ph || null);
+        startTopProgressTicker();
+        setLightRefreshButtonBusyState(!!DBA_LIGHT_REFRESH_STATE.running);
+
+        // fnbar高さを実測して反映
+        scheduleFnbarHeightSync();
+
+        // lifecycleイベントは、ファンクションセクションを再生成した場合でも
+        // 重複登録しない。
+        if(!DBA_FNBAR_BOOT_STATE.lifecycleEventsBound){
+          DBA_FNBAR_BOOT_STATE.lifecycleEventsBound = true;
+          window.addEventListener(
+            'resize',
+            scheduleFnbarHeightSync,
+            { passive:true }
+          );
+          window.addEventListener(
+            'orientationchange',
+            scheduleFnbarHeightSync,
+            { passive:true }
+          );
+        }
+
+        // バトルマップのセルスケール（保存値）を適用
+        waitAndApplyScale();
+
+        // 透明レイヤーを初期化（バトルマップ追従）
+        initBattlemapLayer();
+
+        // セルクリックで詳細モーダル（遷移抑止）
+        initBattlemapCellClickIntercept();
+
+        // 後から<header>が差し替わっても表示設定を再適用
+        startOriginalHeaderVisibilityObserver();
+
+        DBA_FNBAR_BOOT_STATE.initializedOnce = true;
+        return true;
+      }catch(e){
+        console.warn(
+          '[DBA] function section initialization failed',
+          e
+        );
+        return false;
+      }finally{
+        DBA_FNBAR_BOOT_STATE.inserting = false;
+      }
+    };
+
+    function requestFunctionSectionInsert(){
+      Promise.resolve(doInsert()).catch((e) => {
+        console.warn(
+          '[DBA] function section insertion rejected',
+          e
+        );
+      });
     }
+
+    function scheduleFunctionSectionRetry(delayMs){
+      const timer = window.setTimeout(() => {
+        const index = DBA_FNBAR_BOOT_STATE.retryTimers.indexOf(timer);
+        if(index >= 0){
+          DBA_FNBAR_BOOT_STATE.retryTimers.splice(index, 1);
+        }
+
+        requestFunctionSectionInsert();
+      }, Math.max(0, Number(delayMs || 0)));
+
+      DBA_FNBAR_BOOT_STATE.retryTimers.push(timer);
+    }
+
+    function startFunctionSectionRecoveryObserver(){
+      if(DBA_FNBAR_BOOT_STATE.observer) return;
+
+      DBA_FNBAR_BOOT_STATE.observer = new MutationObserver(() => {
+        if(!document.body) return;
+        if(document.getElementById('dba-function-section')) return;
+
+        // 公式ページ側の後処理やブラウザのDOM補正によって
+        // ファンクションセクションが失われた場合は再生成する。
+        scheduleFunctionSectionRetry(0);
+      });
+
+      DBA_FNBAR_BOOT_STATE.observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+    }
+
+    // 現在のDOM状態でも一度試す。
+    // bodyが未生成の場合はdoInsert()が何もせずfalseを返す。
+    requestFunctionSectionInsert();
+
+    // document-startからの通常再読込経路
+    if(document.readyState === 'loading'){
+      document.addEventListener(
+        'DOMContentLoaded',
+        () => {
+          requestFunctionSectionInsert();
+          startFunctionSectionRecoveryObserver();
+        },
+        { once:true }
+      );
+    }else{
+      requestFunctionSectionInsert();
+      startFunctionSectionRecoveryObserver();
+    }
+
+    // DOMContentLoadedがスマートフォン環境で取りこぼされた場合の保険
+    window.addEventListener(
+      'load',
+      () => {
+        requestFunctionSectionInsert();
+        startFunctionSectionRecoveryObserver();
+      },
+      { once:true }
+    );
+
+    // 戻る／進むキャッシュやスマートフォンブラウザのページ復元にも対応
+    window.addEventListener(
+      'pageshow',
+      () => {
+        requestFunctionSectionInsert();
+        startFunctionSectionRecoveryObserver();
+      }
+    );
+
+    // Tampermonkey・ブラウザ・Rocket Loader間の実行順差を吸収する。
+    // 正常に生成済みならdoInsert()は既存要素を確認するだけで終了する。
+    scheduleFunctionSectionRetry(100);
+    scheduleFunctionSectionRetry(500);
+    scheduleFunctionSectionRetry(1500);
+    scheduleFunctionSectionRetry(4000);
   }
 
   injectWhenReady();
