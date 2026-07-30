@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.0.12.0
+// @version      9.0.14.1
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
@@ -29,7 +29,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.0.12.0';
+  const DBA_VERSION = '9.0.14.1';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -2684,7 +2684,7 @@
       position: fixed;
       left: 0;
       top: 0;
-      z-index: 1000002;
+      z-index: 2147483647 !important; /* タイル操作（#dba-auto-equip-pop）より前面へ固定 */
       display: none;
       width: min(320px, calc(100vw - 24px));
       max-width: calc(100vw - 24px);
@@ -13971,11 +13971,19 @@
     saveRosterStore(store);
     // activeId 破損対策も兼ねて生成系を通す
     createRosterIfNeeded();
-    // 既存ロスターへ切り替えた直後は、切替先ロスター上で
-    // 「最後にオート装備で適用したプリセット」記録をクリアする。
-    // これにより、切替前ロスター時点の装備状態や記録を引きずって
-    // 次回オート装備が再装備を誤って省略することを防ぐ。
-    saveAutoEquipLastPreset('');
+
+    // ロスターを切り替えた時点では、切替先ロスターのプリセットと
+    // 実際の装備状態が一致している保証がない。
+    //
+    // autoEquip.lastPreset と LS_CURRENT_PRESET_NAME_KEY の両方を破棄し、
+    // 切替前ロスターの装備済み判定を引きずらないようにする。
+    try{
+      const { roster } = getActiveRoster();
+      invalidateRosterAppliedPresetState(roster);
+    }catch(_e){
+      try{ saveAutoEquipLastPreset(''); }catch(_e2){}
+      try{ saveCurrentPresetName(''); }catch(_e2){}
+    }
     return true;
   }
 
@@ -14563,6 +14571,31 @@
     return out;
   }
 
+  function invalidateRosterAppliedPresetState(roster){
+    // JSONの直接編集やインポートでは、プリセット名が同じまま
+    // 武器・防具・ネックレスのIDだけが変更される場合がある。
+    //
+    // この時、autoEquip.lastPreset や LS_CURRENT_PRESET_NAME_KEY に
+    // 編集・インポート前のプリセット名が残っていると、
+    // 「すでに同じプリセットを装備している」と誤判定され、
+    // 保存後・インポート後の装備IDが適用されないことがある。
+    //
+    // ロスター内容が外部データで置き換えられた場合は、
+    // 実際の装備状態を保証できないため、装備済み判定だけを破棄する。
+    try{
+      if(roster && typeof roster === 'object'){
+        const ae = ensureRosterAutoEquipBlock(roster);
+        ae.lastPreset = '';
+        roster.autoEquip = ae;
+      }
+    }catch(_e){}
+
+    // ロスター外に保持している「現在装備中として扱うプリセット名」も破棄する。
+    try{
+      saveCurrentPresetName('');
+    }catch(_e){}
+  }
+
   function overwriteRosterFromObject(obj){
     // バックアップ用：active roster の全体を上書き（最低限 title/presets を使用）
     const { store, roster } = getActiveRoster();
@@ -14613,6 +14646,11 @@
         migrateSaveDataToGen3IfNeeded();
       }
     }catch(_e){}
+
+    // JSONの直接編集と上書きインポートは、どちらもこの関数を通る。
+    // 外部データでロスター内容を置き換えた時点で装備済み判定を破棄し、
+    // 次回の装備ロスター／オート装備操作で新しい装備IDを再適用させる。
+    invalidateRosterAppliedPresetState(roster);
 
     roster.updatedAt = updatedAtIn || nowIso();
     store.rosters[store.activeId] = roster;
@@ -16942,7 +16980,8 @@
     const store = loadRosterStore();
     const normalized = buildNormalizedRosterFromBackupObject(obj);
     const id = `r_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    store.rosters[id] = {
+
+    const installedRoster = {
       id,
       title: makeRosterUniqueTitle(normalized.title),
       createdAt: normalized.createdAt,
@@ -16951,6 +16990,17 @@
       presetOrder: normalized.presetOrder,
       autoEquip: normalized.autoEquip
     };
+
+    // 別データとして保存する場合も、バックアップ作成元で記録された
+    // 「最後に適用したプリセット」は、このブラウザの実装備状態を
+    // 表すものではないため引き継がない。
+    try{
+      const ae = ensureRosterAutoEquipBlock(installedRoster);
+      ae.lastPreset = '';
+      installedRoster.autoEquip = ae;
+    }catch(_e){}
+
+    store.rosters[id] = installedRoster;
     store.gen = DBA_SAVE_GEN_CURRENT;
     saveRosterStore(store);
     return id;
