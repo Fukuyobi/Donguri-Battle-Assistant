@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
 // @namespace    https://donguri.5ch.io/
-// @version      9.2.4.1
+// @version      10.2.7.1
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
 // @match        https://donguri.5ch.io/teambattle*
 // @match        https://donguri.5ch.io/arena
+// @match        https://donguri.world/alpha*
 // @match        https://donguri.5ch.io/arenalogs
 // @match        https://donguri.5ch.io/bag
 // @match        https://donguri.5ch.io/
@@ -26,10 +27,45 @@
 (function() {
   'use strict';
 
+  // モード別の起動判定は、CSS追加・イベント登録・通信より前に行う。
+  const DBA_MODE_SWITCH_KEY = 'dba.modeSwitches.v1';
+  const DBA_MODE_SWITCH_ITEMS = [
+    ['rb', 'レッド vs ブルー モード'],
+    ['l', 'ラダー モード'],
+    ['hc', 'ハードコア モード'],
+    ['arena', 'アリーナ モード'],
+    ['alpha', 'アドベンチャー モード']
+  ];
+
+  function loadDBAModeSwitches(){
+    let raw = {};
+    try{ raw = JSON.parse(dbaStorageGetItem(DBA_MODE_SWITCH_KEY) || '{}'); }catch(_e){}
+    const out = Object.fromEntries(DBA_MODE_SWITCH_ITEMS.map(([key]) => [key, raw?.[key] !== false]));
+    // 壊れた保存データによって全モードから復帰不能になることも防ぐ。
+    if(!Object.values(out).some(Boolean)){
+      for(const key of Object.keys(out)) out[key] = true;
+    }
+    return out;
+  }
+
+  function getDBAPageMode(){
+    const url = new URL(location.href);
+    if(/^\/alpha\/?$/.test(url.pathname)) return 'alpha';
+    if(/^\/(arena|arenalogs)\/?$/.test(url.pathname)) return 'arena';
+    if(/^\/teambattle\/?$/.test(url.pathname)){
+      const value = url.searchParams.get('m');
+      if(['rb', 'l', 'hc'].includes(value)) return value;
+    }
+    return null;
+  }
+
+  const DBA_PAGE_MODE = getDBAPageMode();
+  if(DBA_PAGE_MODE && !loadDBAModeSwitches()[DBA_PAGE_MODE]) return;
+
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '9.2.4.1';
+  const DBA_VERSION = '10.2.7.1';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -1016,6 +1052,7 @@
   const mode = urlObj.searchParams.get('m');
   const isTopPage = (urlObj.origin === DBA_BASE_ORIGIN && urlObj.pathname === '/' && !mode);
   const isArenaPage = (urlObj.origin === DBA_BASE_ORIGIN && urlObj.pathname === '/arena');
+  const isAlphaPage = (urlObj.origin === DBA_BASE_ORIGIN && /^\/alpha\/?$/.test(urlObj.pathname));
   const isArenaLogsPage = (urlObj.origin === DBA_BASE_ORIGIN && urlObj.pathname === '/arenalogs');
 
   // トップページ（どんぐり基地）は「経過時間」プログレス取得とどんぐりネーム保存だけ行う
@@ -1187,8 +1224,8 @@
     return;
   }
 
-  // teambattle 対象モード（hc / l / rb）と arena 以外では動かさない
-  if (!isArenaPage && !['hc', 'l', 'rb'].includes(mode)) return;
+  // teambattle 対象モード（hc / l / rb）・arena・alpha 以外では動かさない
+  if (!isAlphaPage && !isArenaPage && !['hc', 'l', 'rb'].includes(mode)) return;
 
   // =========================
   // チームバトル：タブ／アプリ復帰時の意図しないページスクロールを抑止
@@ -1251,7 +1288,7 @@
   }
 
   function installResumeScrollGuard(){
-    if(isArenaPage) return false;
+    if(isArenaPage || isAlphaPage) return false;
     if(DBA_RESUME_SCROLL_GUARD.installed) return true;
     DBA_RESUME_SCROLL_GUARD.installed = true;
 
@@ -1418,6 +1455,299 @@
       overflow-y: auto;                            /* ★縦方向のみfnbar内でスクロール */
       overflow-x: clip;                            /* ★横方向へはみ出してページ全体を広げない */
       scrollbar-gutter: stable both-edges;
+    }
+
+    /* アドベンチャーモード：ゲーム直下にロスター用セクションを配置 */
+    main > .dba-alpha-host {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      justify-content: center;
+    }
+    .dba-alpha-host > #game-viewport {
+      width: 100%;
+      height: auto;
+      min-height: 0;
+      flex: 1 1 0;
+    }
+    @media (min-width: 640px) {
+      .dba-alpha-host > #game-viewport {
+        max-height: calc(100dvh - 9rem);
+      }
+    }
+    #dba-function-section.dba-alpha-function-section {
+      position: static;
+      width: 100%;
+      max-width: 100%;
+      max-height: none;
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 4px 8px;
+      z-index: auto;
+      scrollbar-gutter: auto;
+    }
+
+    /* /alpha：ショートカット */
+    #dba-alpha-sc-row {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      overflow-x: auto;
+      flex: 0 0 auto;
+      padding: 4px 0;
+    }
+    #dba-alpha-sc-row > button {
+      flex: 0 0 auto;
+      box-sizing: border-box;
+      width: max-content;
+      min-width: 4em;
+      max-width: var(--dba-sc-max-width, 8em);
+      margin: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      background: #FFB3B9;
+      color: #3D2024;
+    }
+    #dba-alpha-sc-row > button:not(:disabled):not([data-sc-empty="true"]):not([data-sc-depleted="true"]):hover {
+      background: #E5828D;
+      color: #fff;
+    }
+    #dba-alpha-sc-row > button:not(:disabled):not([data-sc-empty="true"]):not([data-sc-depleted="true"]):active {
+      background: #E00;
+      color: #FFF;
+    }
+    #dba-alpha-sc-row { gap: 4px; }
+    #dba-alpha-sc-row > button[data-sc-empty="true"],
+    #dba-alpha-sc-row > button[data-sc-depleted="true"] {
+      background: #e5e7eb;
+      color: #6b7280;
+      border-color: #9ca3af;
+    }
+    #dba-alpha-sc-row > .dba-sc-spacer {
+      display: block;
+      flex: 0 0 auto;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      pointer-events: none;
+    }
+    #dba-sc-extra-spacer {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .5em;
+    }
+    #dba-sc-spacer-width {
+      width: 4em;
+      border: 1px solid #ccc;
+      padding: 0 4px;
+      font: inherit;
+    }
+    #dba-alpha-sc-row > [hidden], #dba-sc-tabs > [hidden] { display: none !important; }
+    #dba-alpha-sc-empty { white-space: nowrap; }
+    #dba-m-alpha-shortcuts .dba-modal__top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      gap: 8px;
+    }
+    #dba-m-alpha-shortcuts [data-sc-close].dba-btn-x {
+      grid-column: 3; grid-row: 1; justify-self: end;
+    }
+    #dba-sc-options-open {
+      grid-column: 2; grid-row: 1;
+      background: #f08800;
+      color: #fff;
+    }
+    #dba-m-alpha-shortcuts #dba-sc-title {
+      grid-column: 1; grid-row: 1;
+      min-width: 0; text-align: left; overflow-wrap: anywhere;
+    }
+    #dba-m-alpha-shortcut-options { width: min(760px, calc(100svw - 24px)); }
+    #dba-m-alpha-shortcut-options .dba-modal__top { gap: 12px; }
+    #dba-m-alpha-shortcut-options .dba-modal__title {
+      flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere;
+    }
+    #dba-m-alpha-shortcut-options .dba-modal__mid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-content: start;
+      gap: 1.5em;
+    }
+    #dba-m-alpha-shortcut-options .dba-modal__mid > * {
+      margin: 0;
+      min-width: 0;
+    }
+    #dba-m-alpha-shortcut-options .dba-modal__mid > label { display: block; }
+    #dba-m-alpha-shortcut-options .dba-sc-width-setting,
+    #dba-m-alpha-shortcut-options .dba-sc-count-setting {
+      display: flex; align-items: center; flex-wrap: wrap; gap: .5em;
+    }
+    #dba-sc-count, #dba-sc-max-width {
+      width: 4em;
+      font: inherit;
+      border: 1px solid #ccc;
+      padding: 0 6px;
+    }
+    #dba-sc-options-ok {
+      background: #3399ee;
+      color: #fff;
+    }
+    #dba-sc-options-apply {
+      background: #50aa50;
+      color: #fff;
+    }
+    #dba-sc-options-cancel {
+      background: #ea4a4a;
+      color: #fff;
+    }
+    #dba-m-alpha-shortcut-options .dba-modal__bot {
+      justify-content: center; gap: 2em; flex-wrap: wrap;
+    }
+    #dba-function-section.dba-alpha-function-section { row-gap: 0.5em; }
+    .dba-mode-switches > label {
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+      margin: 0.7em 0 0.7em 1.5em;
+    }
+    .dba-mode-switches > label > input { flex: 0 0 auto; }
+    .dba-mode-switches > p {
+      margin-left: 1.5em;
+      font-size: 0.9em;
+      line-height: 1.5;
+    }
+    #dba-alpha-sc-row > button > span {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      margin-inline: auto;
+      overflow: hidden;
+      white-space: nowrap;
+      text-align: left;
+    }
+    #dba-alpha-sc-row > button > span.dba-sc-item-caption {
+      display: flex;
+      align-items: center;
+    }
+    .dba-sc-item-name { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+    .dba-sc-item-times { flex: 0 0 auto; margin: 0 1px; }
+    .dba-sc-item-qty { flex: 0 0 auto; }
+    #dba-alpha-sc-row > button:disabled { opacity: .55; cursor: wait; }
+    #dba-m-alpha-shortcuts {
+      width: min(760px, calc(100svw - 24px));
+      height: min(80svh, calc(100svh - 24px));
+    }
+    #dba-m-alpha-shortcuts .dba-modal__top { flex: 0 0 auto; }
+    #dba-m-alpha-shortcuts .dba-modal__mid,
+    #dba-sc-panel {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      max-height: none;
+    }
+    #dba-sc-tabs,
+    #dba-sc-source-tabs {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 3px;
+      overflow-x: auto;
+      padding: 4px;
+    }
+    #dba-sc-tabs > button { flex: 0 0 auto; }
+    #dba-sc-tabs [aria-selected="true"],
+    #dba-sc-source-tabs [aria-selected="true"],
+    #dba-sc-candidate-list [aria-pressed="true"] {
+      background: #d9ecff;
+      color: #111;
+      border-color: #1257a6;
+      box-shadow: inset 0 0 0 2px #1257a6;
+    }
+    #dba-sc-registration {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px 2em;
+      margin: 10px 0;
+      overflow-wrap: anywhere;
+    }
+    #dba-sc-candidate-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      border: 1px solid #888;
+      padding: 6px;
+    }
+    .dba-sc-preset {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0 0 6px;
+      padding: 10px;
+      border: 2px solid #aaa;
+      border-radius: 6px;
+      background: #fff;
+      color: #111;
+      text-align: left;
+      overflow-wrap: anywhere;
+      cursor: pointer;
+      font: inherit;
+    }
+    #dba-sc-register-row {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: .5em;
+      padding-top: 10px;
+    }
+    #dba-sc-label {
+      width: 20em;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      padding: 2px 6px;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      font: inherit;
+    }
+    .dba-sc-dialog {
+      width: min(440px, calc(100svw - 24px));
+      max-height: calc(100svh - 24px);
+      box-sizing: border-box;
+      overflow: auto;
+      padding: 16px;
+      border: 2px solid #888;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+    }
+    .dba-sc-dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #dba-m-alpha-sc-overwrite > p { margin: 0 0 1em; }
+    .dba-sc-dialog-buttons { display: flex; justify-content: center; gap: 1em; }
+    #dba-m-alpha-sc-notice {
+      position: fixed;
+      inset: 50% auto auto 50%;
+      transform: translate(-50%, -50%);
+      margin: 0;
+      width: fit-content;
+      max-width: calc(100svw - 24px);
+      box-sizing: border-box;
+      padding: 10px 16px;
+      border: 2px solid #080;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+      overflow-wrap: anywhere;
+      pointer-events: none;
+      z-index: 1000000;
     }
 
     /* fnbar：上段（<header>情報）／中段（progress）／下段（ボタン群） */
@@ -2228,7 +2558,8 @@
       padding: 0;
       margin: auto;
       font-size: var(--dba-base-font-size);
-      width: min(640px, 100svw);
+      width: fit-content;
+      max-width: min(700px, calc(100svw - 24px));
       max-height: min(80svh, calc(100svh));
       display: flex;
       flex-direction: column;
@@ -3459,13 +3790,57 @@
 
     /* ===== アイテム選択（バッグ表） ===== */
     #dba-m-pick-item.dba-m-std {
-      width: min(1100px, calc(100vw - 24px));
+      width: fit-content;
+      max-width: min(px, calc(100svw - 24px));
+      height: min(90svh, calc(100svh - 24px));
       max-height: min(90svh, calc(100svh - 24px));
       overflow: hidden;
     }
+    #dba-m-pick-item.dba-m-std .dba-modal__top {
+      flex: 0 0 auto;
+    }
     #dba-m-pick-item.dba-m-std .dba-modal__mid {
-      max-height: calc(min(90svh, calc(100svh - 24px)) - 110px);
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      max-height: none;
+      overflow: hidden;
+    }
+    #dba-pick-box {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    #dba-m-pick-item .dba-pick-hint,
+    #dba-pick-box > .dba-pick-filterbar {
+      flex: 0 0 auto;
+    }
+    #dba-pick-table-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
       overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      -webkit-overflow-scrolling: touch;
+    }
+    /* アイテム選択テーブルの罫線を全モードで共通化 */
+    #dba-m-pick-item #dba-pick-table-scroll > table {
+      border-collapse: collapse;
+      border-spacing: 0;
+      border: 1px solid #000;
+    }
+    #dba-m-pick-item #dba-pick-table-scroll > table th {
+      border: 1px solid #000;
+    }
+    #dba-m-pick-item #dba-pick-table-scroll > table td {
+      border: 1px solid #000;
+      padding: 4px 8px;
     }
     .dba-pick-hint {
       font-weight: 700;
@@ -7006,6 +7381,7 @@
       openRosterModal();
     });
 
+    row3.appendChild(buildEnvironmentButton());
     row3.appendChild(btnRoster);
 
     wrap.appendChild(title);
@@ -14768,6 +15144,7 @@
   function saveRosterStore(store){
     try{
       dbaStorageSetItem(ROSTER_LS_KEY, JSON.stringify(store));
+      if(isAlphaPage) window.dispatchEvent(new Event('dba-roster-saved'));
     }catch(_e){}
   }
 
@@ -14864,6 +15241,12 @@
     delete roster.presets[oldNm];
     roster.presets[newNm] = Array.isArray(triple) ? triple.slice(0, 3) : [null, null, null];
     roster.presetOrder = roster.presetOrder.map((nm) => (sanitizeText(nm) === oldNm ? newNm : nm));
+    roster.alphaShortcuts = normalizeAlphaShortcuts(
+      (Array.isArray(roster.alphaShortcuts) ? roster.alphaShortcuts : [])
+        .map(sc => typeof sc === 'string' ? (sc === oldNm ? newNm : sc)
+          : (sc?.kind === 'preset' && sc.target === oldNm ? { ...sc, target:newNm } : sc)),
+      roster.presets
+    );
 
     try{
       const ae = ensureRosterAutoEquipBlock(roster);
@@ -15244,6 +15627,7 @@
     }
     roster.title = title || roster.title;
     roster.presets = cleaned;
+    roster.alphaShortcuts = normalizeAlphaShortcuts(obj.alphaShortcuts, cleaned);
     // 表示順はバックアップの記述順にする（ここで並び替えない）
     roster.presetOrder = order;
     roster.createdAt = createdAtIn || normalizeRosterDateTimeValue(roster.createdAt, nowIso());
@@ -15423,6 +15807,7 @@
     if(!n) return false;
     if(roster.presets && roster.presets[n]){
       delete roster.presets[n];
+      roster.alphaShortcuts = normalizeAlphaShortcuts(roster.alphaShortcuts, roster.presets);
       // 表示順配列からも削除
       if(Array.isArray(roster.presetOrder)){
         roster.presetOrder = roster.presetOrder.filter(x => x !== n);
@@ -15820,7 +16205,16 @@
   async function equipById(id){
     if(id == null) return { ok:true, missing:false };
     const url = makeEquipUrl(id);
-    const res = await fetch(url, { method:'GET', credentials:'include', cache:'no-store' });
+    // 「装備」ボタンの通信にreferrerを"/arena"で指定する
+    const res = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      ...(isAlphaPage ? {
+        referrer: makeSiteUrl('/arena'),
+        referrerPolicy: 'same-origin'
+      } : {})
+    });
     if(!res.ok) throw new Error(`equip failed: ${res.status}`);
     const bodyText = await res.text();
     if(isItemMissingResponseText(bodyText)){
@@ -15837,7 +16231,7 @@
     };
   }
 
-  async function equipPresetByName(name){
+  async function equipPresetByName(name, promptMissing = true){
     const { roster } = getActiveRoster();
     const n = sanitizeText(name);
     const triple = roster && roster.presets ? roster.presets[n] : null;
@@ -15879,6 +16273,7 @@
     }
 
     if(sawMissing){
+      if(!promptMissing) return { ok:false, missing:true, deleted:false };
       return await handleMissingPresetDuringEquip(n);
     }
 
@@ -15921,6 +16316,44 @@
   // =========================
   // 装備ロスター：モーダル UI
   // =========================
+  // アドベンチャーモード：ロスター／アイテム選択内のホイールを処理する。
+  function handleAlphaRosterWheel(e){
+    if(!isAlphaPage || e.ctrlKey || e.metaKey) return;
+
+    const pickDlg = document.getElementById('dba-m-pick-item');
+    const picking = !!(pickDlg && pickDlg.open);
+    const scDlg = document.getElementById('dba-m-alpha-shortcuts');
+    const settingSC = !!(scDlg && scDlg.open);
+    const dlg = settingSC ? scDlg : (picking ? pickDlg : document.getElementById('dba-m-roster'));
+    const list = document.getElementById(
+      settingSC ? 'dba-sc-candidate-list' : (picking ? 'dba-pick-table-scroll' : 'dba-roster-list')
+    );
+    if(!dlg || !dlg.open || !(list instanceof HTMLElement)) return;
+    if(!dlg.contains(list)) return;
+    if(!(e.target instanceof Node) || !list.contains(e.target)) return;
+
+    let deltaY = Number(e.deltaY || 0);
+    if(!Number.isFinite(deltaY) || deltaY === 0) return;
+
+    // deltaMode：0=ピクセル、1=行、2=ページ。
+    if(e.deltaMode === 1){
+      const style = getComputedStyle(list);
+      const lineHeight = parseFloat(style.lineHeight);
+      const fontSize = parseFloat(style.fontSize) || 16;
+      deltaY *= Number.isFinite(lineHeight) ? lineHeight : fontSize * 1.2;
+    }else if(e.deltaMode === 2){
+      deltaY *= Math.max(1, list.clientHeight);
+    }
+
+    // ネイティブスクロールとの二重処理と、ゲーム側への伝播を防ぐ。
+    // 既にpreventDefaultされていても、scrollTopへの直接反映は可能。
+    if(e.cancelable) e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = Math.max(0, Math.min(maxTop, list.scrollTop + deltaY));
+  }
+
   function buildRosterModal(){
     if(document.getElementById('dba-m-roster')) return;
 
@@ -16041,7 +16474,7 @@
     btnOption.textContent = 'ロスターオプション';
 
 
-    headBtns.appendChild(btnAuto);
+    if(!isAlphaPage) headBtns.appendChild(btnAuto);
     headBtns.appendChild(btnOption);
 
     head.appendChild(headTitle);
@@ -16148,10 +16581,30 @@
               closeRosterProgressAlertModal();
               return;
             }
+            if(isAlphaPage && !result?.ok){
+              throw new Error('装備変更後の確認に失敗しました。');
+            }
             saveAutoEquipLastPreset('');
             if(rosterDlg) rosterDlg.dataset.dbaMenuPresetName = '';
             closeRosterProgressAlertModal();
-            openRosterResultModalWithNode(`装備切替完了\n${nm}`, '装備ロスター');
+            let resultText = `装備切替完了\n${nm}`;
+            if(isAlphaPage){
+              try{
+                // アドベンチャーモードにおいては
+                // 公式「今すぐ装備」と同じ通知で、ゲーム側に再取得・再描画を依頼。
+                // ページ側のCustomEventを使い、Firefoxの実行領域の違いにも対応。
+                const pageWindow = (typeof unsafeWindow !== 'undefined' && unsafeWindow)
+                  ? unsafeWindow
+                  : window;
+                pageWindow.dispatchEvent(
+                  new pageWindow.CustomEvent('armory:loadout-activated')
+                );
+              }catch(error){
+                console.warn('[DBA] alpha equipment refresh notification failed', error);
+                resultText += '\nゲーム画面の更新通知に失敗しました。ページを再読み込みしてください。';
+              }
+            }
+            openRosterResultModalWithNode(resultText, '装備ロスター');
           }catch(_e2){
             closeRosterProgressAlertModal();
             openRosterResultModalWithNode(`装備切替に失敗しました\n${nm}`, '装備ロスター');
@@ -17422,7 +17875,8 @@
       presets: orderedPresets,
       autoEquip: (r.autoEquip && typeof r.autoEquip === 'object')
         ? r.autoEquip
-        : { candidates: {}, lastPreset: '' }
+        : { candidates: {}, lastPreset: '' },
+      alphaShortcuts: normalizeAlphaShortcuts(r.alphaShortcuts, orderedPresets)
     };
   }
 
@@ -17585,6 +18039,7 @@
       updatedAt: updatedAtIn || nowIso(),
       presets: cleaned,
       presetOrder: order,
+      alphaShortcuts: normalizeAlphaShortcuts(obj.alphaShortcuts, cleaned),
       autoEquip: {
         candidates: aeCandidates,
         lastPreset: String(aeLast || '')
@@ -17604,6 +18059,7 @@
       updatedAt: normalized.updatedAt,
       presets: normalized.presets,
       presetOrder: normalized.presetOrder,
+      alphaShortcuts: normalized.alphaShortcuts,
       autoEquip: normalized.autoEquip
     };
 
@@ -19497,7 +19953,16 @@
 
   async function fetchBagTableDoc(){
     const url = makeBagUrl();
-    const res = await fetch(url, { method:'GET', credentials:'include', cache:'no-store' });
+    // 「アイテムバッグ（/bag）」取得の通信にreferrerを"/arena"で指定する
+    const res = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      ...(isAlphaPage ? {
+        referrer: makeSiteUrl('/arena'),
+        referrerPolicy: 'same-origin'
+      } : {})
+    });
     if(!res.ok) throw new Error(`bag fetch failed: ${res.status}`);
     const html = await res.text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -19798,9 +20263,12 @@
       }
 
       box.textContent = '';
-      // 先にフィルタバー、その下にテーブル
+      // フィルタバーを固定し、その下のテーブル領域だけをスクロールさせる。
+      const tableScroll = document.createElement('div');
+      tableScroll.id = 'dba-pick-table-scroll';
+      tableScroll.appendChild(imported);
       box.appendChild(filterBar);
-      box.appendChild(imported);
+      box.appendChild(tableScroll);
 
       // 中身を差し替えた直後にも先頭へ戻す
       try{ dlg.scrollTop = 0; }catch(_e){}
@@ -25387,6 +25855,147 @@ function avatarsKeyToMap(avatarsKey){
   // =========================
   // 設定モーダル（UI）
   // =========================
+  // 各モード共通のスクリプト情報ブロック
+  function buildScriptInfoBlock(){
+    const row = document.createElement('div');
+    row.className = 'dba-setting-row';
+
+    const title = document.createElement('div');
+    title.className = 'dba-setting-block-title';
+    title.textContent = 'スクリプト情報';
+
+    const dl = document.createElement('dl');
+    dl.className = 'dba-setting-deflist';
+
+    const addDef = (dtText, ddText) => {
+      const dt = document.createElement('dt');
+      dt.textContent = dtText;
+      const dd = document.createElement('dd');
+      dd.textContent = ddText;
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    };
+
+    addDef('スクリプト名', 'Donguri Battle Assistant');
+    addDef('バージョン', DBA_VERSION);
+    addDef('作者名', '福呼び草');
+    addDef('アシスタント', 'ChatGPT');
+
+    row.appendChild(title);
+    row.appendChild(dl);
+    return row;
+  }
+
+  // DBAスイッチ（モードごとにDBA有効／無効の切替）
+  function buildDBAModeSwitchBlock(){
+    const block = document.createElement('section');
+    block.className = 'dba-setting-row dba-mode-switches';
+    const title = document.createElement('div');
+    title.className = 'dba-setting-block-title';
+    title.textContent = 'DBAスイッチ';
+    block.appendChild(title);
+    const saved = loadDBAModeSwitches();
+    for(const [key, text] of DBA_MODE_SWITCH_ITEMS){
+      const label = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.dbaModeSwitch = key;
+      input.checked = saved[key];
+      label.append(input, document.createTextNode(text));
+      block.appendChild(label);
+    }
+    const note = document.createElement('p');
+    note.textContent = '※ チェックボックスをOFFにするとDBAが無効化され、UIも表示されなくなります。再表示する場合は他のゲームモードの「環境設定」から有効化してください。';
+    block.appendChild(note);
+    return block;
+  }
+
+  function readDBAModeSwitchInputs(root){
+    return Object.fromEntries(DBA_MODE_SWITCH_ITEMS.map(([key]) => [
+      key, !!root.querySelector(`input[data-dba-mode-switch="${key}"]`)?.checked
+    ]));
+  }
+
+  function setDBAModeSwitchInputs(root){
+    const saved = loadDBAModeSwitches();
+    for(const input of root.querySelectorAll('input[data-dba-mode-switch]')){
+      input.checked = saved[input.dataset.dbaModeSwitch];
+    }
+  }
+
+  function validateDBAModeSwitches(values){
+    if(DBA_MODE_SWITCH_ITEMS.some(([key]) => values[key] === true)) return true;
+    alert('DBAスイッチをすべてOFFにすることはできません。すべてOFFにしたい場合は、TampermonkeyでDBAを無効化してください。');
+    return false;
+  }
+
+  function reloadIfDBAModeDisabled(){
+    if(DBA_PAGE_MODE && !loadDBAModeSwitches()[DBA_PAGE_MODE]) location.reload();
+  }
+
+  function buildEnvironmentButton(){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dba-btn-fn';
+    btn.textContent = '環境設定';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openModeEnvironmentSettings();
+    });
+    return btn;
+  }
+
+  function openModeEnvironmentSettings(){
+    const dialogId = isAlphaPage
+      ? 'dba-m-alpha-environment'
+      : 'dba-m-arena-environment';
+    const titleId = `${dialogId}-title`;
+    if(document.getElementById(dialogId)) return;
+    const dlg = document.createElement('dialog');
+    dlg.id = dialogId;
+    dlg.className = 'dba-m-std';
+    dlg.setAttribute('aria-labelledby', titleId);
+    dlg.innerHTML = `
+      <div class="dba-modal__top">
+        <div class="dba-modal__title" id="${titleId}">環境設定</div>
+        <button type="button" class="dba-btn-x" data-env-action="cancel" aria-label="閉じる">×</button>
+      </div>
+      <div class="dba-modal__mid"></div>
+      <div class="dba-modal__bot">
+        <button type="button" class="dba-btn-ok" data-env-action="ok">OK</button>
+        <button type="button" class="dba-btn-apply" data-env-action="apply">Apply</button>
+        <button type="button" class="dba-btn-close" data-env-action="cancel">Cancel</button>
+      </div>`;
+    dlg.querySelector('.dba-modal__mid').append(
+      buildDBAModeSwitchBlock(),
+      buildScriptInfoBlock()
+    );
+    const close = () => {
+      dlg.close();
+      dlg.remove();
+      // Applyで保存済みのOFFも、モーダルを閉じた時点で反映する。
+      reloadIfDBAModeDisabled();
+    };
+    dlg.querySelectorAll('[data-env-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.envAction;
+        if(action !== 'cancel'){
+          const values = readDBAModeSwitchInputs(dlg);
+          if(!validateDBAModeSwitches(values)) return;
+          dbaStorageSetItem(DBA_MODE_SWITCH_KEY, JSON.stringify(values));
+        }
+        if(action !== 'apply') close();
+      });
+    });
+    dlg.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      close();
+    });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  }
+
   function buildSettingsModal(){
     if(document.getElementById('dba-m-settings')) return;
 
@@ -25400,7 +26009,7 @@ function avatarsKeyToMap(avatarsKey){
 
     const title = document.createElement('div');
     title.className = 'dba-modal__title';
-    title.textContent = '設定';
+    title.textContent = '環境設定';
 
     const btnX = document.createElement('button');
     btnX.type = 'button';
@@ -26152,36 +26761,10 @@ function avatarsKeyToMap(avatarsKey){
       mid.appendChild(row);
     })();
 
-    // スクリプト情報
-    (function mkScriptInfoBlock(){
-      const row = document.createElement('div');
-      row.className = 'dba-setting-row';
+    mid.appendChild(buildDBAModeSwitchBlock());
 
-      const title = document.createElement('div');
-      title.className = 'dba-setting-block-title';
-      title.textContent = 'スクリプト情報';
-
-      const dl = document.createElement('dl');
-      dl.className = 'dba-setting-deflist';
-
-      const addDef = (dtText, ddText) => {
-        const dt = document.createElement('dt');
-        dt.textContent = dtText;
-        const dd = document.createElement('dd');
-        dd.textContent = ddText;
-        dl.appendChild(dt);
-        dl.appendChild(dd);
-      };
-
-      addDef('スクリプト名', 'Donguri Battle Assistant');
-      addDef('バージョン', DBA_VERSION);
-      addDef('作者名', '福呼び草');
-      addDef('アシスタント', 'ChatGPT');
-
-      row.appendChild(title);
-      row.appendChild(dl);
-      mid.appendChild(row);
-    })();
+    // スクリプト情報（各モード共通）
+    mid.appendChild(buildScriptInfoBlock());
 
     // Bot
     const bot = document.createElement('div');
@@ -26264,7 +26847,8 @@ function avatarsKeyToMap(avatarsKey){
         rbShowCellRegulation: false,
         rbShowNobodyHolder: false,
         layerTextOpacity: 100,
-        showOriginalHeader: false
+        showOriginalHeader: false,
+        modeSwitches: readDBAModeSwitchInputs(dlg)
       };
       for(const inp of dlg.querySelectorAll('input[type="number"][data-mode-key][data-axis]')){
         const k = inp.dataset.modeKey;
@@ -26317,6 +26901,7 @@ function avatarsKeyToMap(avatarsKey){
     }
 
     function setInputsFromSettings(s){
+      setDBAModeSwitchInputs(dlg);
       for(const inp of dlg.querySelectorAll('input[type="number"][data-mode-key][data-axis]')){
         const k = inp.dataset.modeKey;
         const axis = inp.dataset.axis;
@@ -26416,6 +27001,7 @@ function avatarsKeyToMap(avatarsKey){
     function commitFromModal(){
       const cur = loadSettings();
       const v = readModalValues();
+      if(!validateDBAModeSwitches(v.modeSwitches)) return false;
       cur.cellSize.rb.width  = sanitizeCellPx(v.rb.width,  DEFAULT_SETTINGS.cellSize.rb.width);
       cur.cellSize.rb.height = sanitizeCellPx(v.rb.height, DEFAULT_SETTINGS.cellSize.rb.height);
       cur.cellSize.hc.width  = sanitizeCellPx(v.hc.width,  DEFAULT_SETTINGS.cellSize.hc.width);
@@ -26447,6 +27033,7 @@ function avatarsKeyToMap(avatarsKey){
 
       /// 範囲外入力はここで px に補正し、UIにも反映
       saveSettings(cur);
+      dbaStorageSetItem(DBA_MODE_SWITCH_KEY, JSON.stringify(v.modeSwitches));
       setInputsFromSettings(cur);
       hideFnTooltip();
 
@@ -26506,10 +27093,12 @@ function avatarsKeyToMap(avatarsKey){
       }
 
       refreshInitial();
+      return true;
     }
 
     function closeDirect(){
       try{ dlg.close(); }catch(_e){ dlg.removeAttribute('open'); }
+      reloadIfDBAModeDisabled();
     }
 
     function askCloseIfDirty(){
@@ -26519,6 +27108,11 @@ function avatarsKeyToMap(avatarsKey){
       }
       try{ adlg.showModal(); }catch(_e){ adlg.setAttribute('open',''); }
     }
+
+    dlg.addEventListener('dba-settings-refresh', () => {
+      setInputsFromSettings(loadSettings());
+      refreshInitial();
+    });
 
     // input change -> mark dirty
     dlg.addEventListener('input', () => { dirty = true; }, true);
@@ -26533,7 +27127,7 @@ function avatarsKeyToMap(avatarsKey){
     btnOK.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      commitFromModal();
+      if(!commitFromModal()) return;
       closeDirect();
     });
 
@@ -26593,7 +27187,8 @@ function avatarsKeyToMap(avatarsKey){
     const openNow = () => {
       buildSettingsModal();
       const dlg = document.getElementById('dba-m-settings');
-      if(!dlg) return;
+      if(!dlg || dlg.open) return;
+      dlg.dispatchEvent(new Event('dba-settings-refresh'));
       try{ dlg.showModal(); }catch(_e){ dlg.setAttribute('open',''); }
     };
 
@@ -26601,50 +27196,7 @@ function avatarsKeyToMap(avatarsKey){
     else document.addEventListener('DOMContentLoaded', openNow, { once: true });
   }
 
-  function buildFunctionSection() {
-    const bar = document.createElement('section');
-    bar.id = 'dba-function-section';
-
-    // 3段構造：上=header情報 / 中=progress / 下=ボタン群
-    const headerHost = document.createElement('div');
-    headerHost.id = 'dba-fn-header-host';
-    const progressHost = document.createElement('div');
-    progressHost.id = 'dba-fn-progress-host';
-    const buttonsRow = document.createElement('div');
-    buttonsRow.id = 'dba-fn-buttons-row';
-
-    const btnSettings = document.createElement('button');
-    btnSettings.type = 'button';
-    btnSettings.className = 'dba-btn-fn';
-    btnSettings.textContent = '設定';
-    btnSettings.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openSettingsModal();
-    });
-
-    const btnRapid = document.createElement('button');
-    btnRapid.type = 'button';
-    btnRapid.className = 'dba-btn-fn';
-    btnRapid.id = 'dba-btn-rapid-attack';
-    function syncRapidBtn(){
-      const on = loadRapidAttackEnabled();
-      btnRapid.dataset.on = on ? '1' : '0';
-      btnRapid.innerHTML = on ? 'ラピッド攻撃<br>ON' : 'ラピッド攻撃<br>OFF';
-    }
-    syncRapidBtn();
-    btnRapid.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const next = !loadRapidAttackEnabled();
-      saveRapidAttackEnabled(next);
-      syncRapidBtn();
-    });
-    bindFnButtonTooltip(
-      btnRapid,
-      '「セル詳細」を経由せず 攻撃や移動 を行います'
-    );
-
+  function buildRosterFunctionButton(){
     const btnRoster = document.createElement('button');
     btnRoster.type = 'button';
     btnRoster.className = 'dba-btn-fn';
@@ -26693,6 +27245,1091 @@ function avatarsKeyToMap(avatarsKey){
       btnRoster,
       'クリック：「装備ロスター」画面を表示\n長押し：装備ロスターの切替や新規作成'
     );
+    return btnRoster;
+  }
+
+  // ============================================================
+  // ▽ここから▽ 「ファンクションセクション」専用関数
+  // ------------------------------------------------------------
+  // ショートカットのオプションはDBA共通設定。割り当てはロスター別に保存する。
+  function loadAlphaShortcutOptions(){
+    let raw = {};
+    try{ raw = JSON.parse(dbaStorageGetItem('dba-alpha-sc-options') || '{}') || {}; }catch(_e){}
+    const count = Number(raw.count);
+    const maxWidth = Number(raw.maxWidth);
+    return {
+      hideEmpty: raw.hideEmpty === true,
+      customWidth: raw.customWidth === true,
+      maxWidth: Number.isInteger(maxWidth) && maxWidth >= 8 && maxWidth <= 16 ? maxWidth : 8,
+      wrap: raw.wrap === true,
+      skipBeforeUse: raw.skipBeforeUse !== false,
+      customCount: raw.customCount === true,
+      count: Number.isInteger(count) && count >= 1 && count <= 20 ? count : 5
+    };
+  }
+
+  function alphaShortcutCount(options = loadAlphaShortcutOptions()){
+    return options.customCount ? options.count : 5;
+  }
+
+  function alphaShortcutSlotLabel(index){
+    return `SC_${String(index + 1).padStart(2, '0')}`;
+  }
+
+  function openAlphaShortcutOptions(){
+    const existing = document.getElementById('dba-m-alpha-shortcut-options');
+    if(existing?.open) return;
+    const dlg = document.createElement('dialog');
+    dlg.id = 'dba-m-alpha-shortcut-options';
+    dlg.className = 'dba-m-std';
+    dlg.setAttribute('aria-labelledby', 'dba-sc-options-title');
+    dlg.innerHTML = `
+      <div class="dba-modal__top">
+        <div class="dba-modal__title" id="dba-sc-options-title">Shortcut設定　オプション</div>
+        <button type="button" class="dba-btn-x" id="dba-sc-options-x" aria-label="閉じる">×</button>
+      </div>
+      <div class="dba-modal__mid">
+        <label><input type="checkbox" id="dba-sc-hide-empty"> 未登録のショートカットは表示しない。</label>
+        <div class="dba-sc-width-setting">
+          <label><input type="checkbox" id="dba-sc-custom-width"> ショートカット（ボタン）の横幅の上限を変更する。</label>
+          <input type="number" id="dba-sc-max-width" min="8" max="16" step="1" required aria-label="ボタンの横幅の上限（em）">
+        </div>
+        <div class="dba-sc-count-setting">
+          <label><input type="checkbox" id="dba-sc-custom-count"> ショートカットの数を変更する。</label>
+          <input type="number" id="dba-sc-count" min="1" max="20" step="1" required aria-label="ショートカットの数">
+        </div>
+        <label class="dba-sc-wrap-setting"><input type="checkbox" id="dba-sc-wrap"> ショートカットの数が横へあふれる場合、折り返して表示する。</label>
+        <label><input type="checkbox" id="dba-sc-skip-before-use"> ショートカットで消費アイテム使用する前にバックグラウンドでアイテム情報を最新化する処理を省略する。</label>
+      </div>
+      <div class="dba-modal__bot">
+        <button type="button" class="dba-btn-apply" id="dba-sc-options-ok">OK</button>
+        <button type="button" class="dba-btn-apply" id="dba-sc-options-apply">Apply</button>
+        <button type="button" class="dba-btn-close" id="dba-sc-options-cancel">Cancel</button>
+      </div>`;
+    const hide = dlg.querySelector('#dba-sc-hide-empty');
+    const customWidth = dlg.querySelector('#dba-sc-custom-width');
+    const maxWidth = dlg.querySelector('#dba-sc-max-width');
+    const wrap = dlg.querySelector('#dba-sc-wrap');
+    const skipBeforeUse = dlg.querySelector('#dba-sc-skip-before-use');
+    const custom = dlg.querySelector('#dba-sc-custom-count');
+    const count = dlg.querySelector('#dba-sc-count');
+    let saved = loadAlphaShortcutOptions();
+    let asking = false;
+    const reset = () => {
+      hide.checked = saved.hideEmpty;
+      customWidth.checked = saved.customWidth;
+      maxWidth.value = String(saved.maxWidth);
+      maxWidth.disabled = !customWidth.checked;
+      wrap.checked = saved.wrap;
+      skipBeforeUse.checked = saved.skipBeforeUse;
+      custom.checked = saved.customCount;
+      count.value = String(saved.count);
+      count.disabled = !custom.checked;
+    };
+    const changed = () => hide.checked !== saved.hideEmpty
+      || customWidth.checked !== saved.customWidth || maxWidth.value !== String(saved.maxWidth)
+      || wrap.checked !== saved.wrap
+      || skipBeforeUse.checked !== saved.skipBeforeUse
+      || custom.checked !== saved.customCount || count.value !== String(saved.count);
+    const save = close => {
+      if(customWidth.checked && !maxWidth.reportValidity()) return;
+      if(custom.checked && !count.reportValidity()) return;
+      const n = Number(count.value);
+      const w = Number(maxWidth.value);
+      saved = {
+        hideEmpty: hide.checked,
+        customWidth: customWidth.checked,
+        maxWidth: Number.isInteger(w) && w >= 8 && w <= 16 ? w : saved.maxWidth,
+        wrap: wrap.checked,
+        skipBeforeUse: skipBeforeUse.checked,
+        customCount: custom.checked,
+        count: Number.isInteger(n) && n >= 1 && n <= 20 ? n : saved.count
+      };
+      dbaStorageSetItem('dba-alpha-sc-options', JSON.stringify(saved));
+      reset();
+      refreshAlphaShortcutButtons();
+      renderAlphaShortcutSettings();
+      if(close) dlg.close();
+    };
+    const requestClose = async () => {
+      if(asking) return;
+      if(!changed()){ dlg.close(); return; }
+      asking = true;
+      try{
+        const close = await showAlphaShortcutDialog('設定の変更を破棄しますか？', true);
+        // 「はい」の場合だけ変更を破棄し、「いいえ」では編集中の値を保持する。
+        if(close){
+          reset();
+          if(dlg.open) dlg.close();
+        }
+      }finally{ asking = false; }
+    };
+    customWidth.addEventListener('change', () => { maxWidth.disabled = !customWidth.checked; });
+    custom.addEventListener('change', () => { count.disabled = !custom.checked; });
+    dlg.querySelector('#dba-sc-options-x').addEventListener('click', requestClose);
+    dlg.querySelector('#dba-sc-options-ok').addEventListener('click', () => save(true));
+    dlg.querySelector('#dba-sc-options-apply').addEventListener('click', () => save(false));
+    dlg.querySelector('#dba-sc-options-cancel').addEventListener('click', () => dlg.close());
+    dlg.addEventListener('cancel', e => { e.preventDefault(); requestClose(); });
+    dlg.addEventListener('close', () => dlg.remove(), { once:true });
+    reset();
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  }
+
+  // 最大20枠を保持し、表示数を減らしても範囲外の割り当てを消さない。
+  // 表示名と実行対象を分けて保存。旧形式の文字列にも対応する。
+
+  function normalizeAlphaShortcuts(raw, presets){
+    return Array.from({ length:20 }, (_, i) => {
+      const value = Array.isArray(raw) ? raw[i] : null;
+      const sc = typeof value === 'string'
+        ? { kind:'preset', target:value, label:value } : value;
+      if(sc?.kind === 'spacer'){
+        const width = Number(sc.width);
+        return Number.isInteger(width) && width >= 1 && width <= 30
+          ? { kind:'spacer', width, label:`スペーサー（${width}px）` } : null;
+      }
+      if(!sc || typeof sc.target !== 'string' || typeof sc.label !== 'string') return null;
+      const valid = sc.kind === 'preset'
+        ? Object.prototype.hasOwnProperty.call(presets || {}, sc.target)
+        : sc.kind === 'loadout'
+          ? /^[1-9]\d*$/.test(sc.target) && Number.isSafeInteger(Number(sc.target))
+          : sc.kind === 'item' && sc.target.startsWith('consumable:alchemy:');
+      const label = sc.label.trim();
+      return valid && label ? { kind:sc.kind, target:sc.target, label } : null;
+    });
+  }
+
+  const DBA_ALPHA_SC = {
+    busy:false, timer:0, tab:0, rosterId:null, selected:[], labels:[], bound:false,
+    source:'preset', items:[], loading:false, itemError:'', choosing:false, session:0,
+    materials:null, loadouts:[], armoryLoading:false, armoryError:'',
+    inventoryUpdatedAt:0, inventorySignature:''
+  };
+
+  function updateAlphaShortcutQuantities(materials, definitions, source = ''){
+    if(!materials || typeof materials !== 'object' || Array.isArray(materials)) return;
+    const signature = JSON.stringify([
+      Object.entries(materials).sort(([a], [b]) => a.localeCompare(b)),
+      Object.entries(definitions || {}).sort(([a], [b]) => a.localeCompare(b))
+    ]);
+    const changed = signature !== DBA_ALPHA_SC.inventorySignature;
+    DBA_ALPHA_SC.materials = materials;
+    DBA_ALPHA_SC.inventorySignature = signature;
+    // 単なる再描画・フォーカス復帰では有効期限を延長しない。
+    if(source === 'response' || source === 'open' || (source === 'official' && changed)){
+      DBA_ALPHA_SC.inventoryUpdatedAt = Date.now();
+    }else if(changed){
+      DBA_ALPHA_SC.inventoryUpdatedAt = 0;
+    }
+    refreshAlphaShortcutButtons();
+  }
+
+  function isAlphaShortcutInventoryFresh(){
+    const age = Date.now() - DBA_ALPHA_SC.inventoryUpdatedAt;
+    return DBA_ALPHA_SC.inventoryUpdatedAt > 0 && age >= 0 && age <= 30000;
+  }
+
+  function alphaShortcutQuantity(key){
+    const materials = DBA_ALPHA_SC.materials;
+    if(!materials) return null;
+    if(!Object.prototype.hasOwnProperty.call(materials, key)) return 0;
+    const qty = Number(materials[key]);
+    return Number.isFinite(qty) && qty >= 0 ? Math.floor(qty) : null;
+  }
+
+  // 公式モーダルの描画後に、公式と同じ所持数を全ショートカットへ反映する。
+  function bindAlphaShortcutQuantitySync(){
+    let timer = 0;
+    let running = false;
+    let pending = false;
+    let pendingSource = '';
+    const schedule = (source = '') => {
+      if(source === 'open' || (source === 'official' && pendingSource !== 'open')){
+        pendingSource = source;
+      }
+      pending = true;
+      if(timer || running) return;
+      timer = setTimeout(async () => {
+        timer = 0;
+        pending = false;
+        running = true;
+        const source = pendingSource;
+        pendingSource = '';
+        try{
+          await requestAlphaAlchemy('snapshot', '', source);
+        }catch(error){
+          console.warn('[DBA] SC quantities', error);
+        }finally{
+          running = false;
+          if(pending) schedule();
+        }
+      }, 100);
+    };
+
+    const ids = ['alchemy-modal', 'stackable-inventory-modal'];
+    const attached = new Set();
+    const changes = new MutationObserver(() => schedule('official'));
+    const attach = () => {
+      for(const id of ids){
+        if(attached.has(id)) continue;
+        const modal = document.getElementById(id);
+        if(!modal) continue;
+        changes.observe(modal, {
+          childList:true, subtree:true, characterData:true,
+          attributes:true, attributeFilter:['class', 'hidden', 'open']
+        });
+        attached.add(id);
+        schedule();
+      }
+      return attached.size === ids.length;
+    };
+
+    // Inventory は初回表示時に生成されるため、生成完了まで検出する。
+    if(!attach()){
+      const discovery = new MutationObserver(() => {
+        if(attach()) discovery.disconnect();
+      });
+      discovery.observe(document.body, {childList:true, subtree:true});
+    }
+    // 使用後に公式モーダルが閉じる場合も、公式の使用通知から同期する。
+    window.addEventListener('alchemy-use-feedback', () => schedule('official'));
+    document.addEventListener('click', e => {
+      const toggle = e.target instanceof Element
+        ? e.target.closest('#alchemy-toggle, #materials-toggle') : null;
+      if(toggle && toggle.getAttribute('aria-expanded') !== 'true') schedule('open');
+    }, true);
+    return schedule;
+  }
+
+  // ページ側の import map を使い、公式と同じ状態・送信形式で処理する。
+  async function alphaAlchemyPageRequest(args){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(0, args.deadline - Date.now()));
+    let useSent = false;
+    let useConfirmed = false;
+    const reply = result => window.dispatchEvent(new CustomEvent(args.event, {
+      detail: JSON.stringify(result)
+    }));
+    try{
+      if(location.pathname !== '/alpha') throw new Error('アドベンチャーモード専用です');
+      if(!['book', 'use', 'snapshot'].includes(args.action)) throw new Error('操作が不正です');
+      if(args.action === 'use' && !String(args.key).startsWith('consumable:alchemy:')){
+        throw new Error('消費アイテムのキーが不正です');
+      }
+      const [{ worldClientState: state }, network, effects] = await Promise.all([
+        import('/PixiJS/core/state.js'),
+        import('/PixiJS/network/network.js'),
+        import('/PixiJS/alchemy/effectCatalog.js')
+      ]);
+      // // 初期表示・フォーカス復帰・公式画面更新時は、公式のメモリ上の所持数を参照する。
+      // snapshot では book・use のAPI通信を行わない。
+      if(args.action === 'snapshot'){
+        reply({ ok:true, materials:state.selfProfile?.materials || null,
+          definitions:state.selfProfile?.alchemyDefinitions || {}, source:args.source });
+        return;
+      }
+      const request = async body => {
+        if(controller.signal.aborted || Date.now() >= args.deadline){
+          throw new Error('通信がタイムアウトしました');
+        }
+        if(body.action === 'use') useSent = true;
+        // fetch のリダイレクトは通信内で完結し、ページ自体は遷移させない。
+        const response = await fetch('/world/alchemy', {
+          method: 'POST', mode: 'same-origin', credentials: 'include',
+          headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
+          body: JSON.stringify(body), signal: controller.signal
+        });
+        if(response.status === 204){
+          const error = new Error(body.action === 'use'
+            ? '使用リクエストが頻度制限を受けました（HTTP 204）。自動再送はしていません。少し待ってから再操作してください。'
+            : '所持アイテムの取得が頻度制限を受けました（HTTP 204）。使用リクエストは送信していません。');
+          error.status = 204;
+          throw error;
+        }
+        const text = await response.text();
+        let data;
+        try{ data = JSON.parse(text); }catch(_e){
+          let message = text.trim();
+          if(/text\/html/i.test(response.headers.get('content-type') || '')){
+            const doc = new DOMParser().parseFromString(text, 'text/html');
+            doc.querySelectorAll('script,style,noscript').forEach(node => node.remove());
+            message = doc.body.textContent.trim();
+          }
+          throw new Error(message || `応答を確認できませんでした（HTTP ${response.status}）`);
+        }
+        if(!response.ok || !data?.ok){
+          throw new Error(typeof data === 'string' ? data
+            : (typeof data?.message === 'string' ? data.message
+              : (typeof data?.error === 'string' ? data.error : (text.trim() || `HTTP ${response.status}`))));
+        }
+        if(body.action === 'use') useConfirmed = true;
+        const materials = data.materials || data.alchemy?.materials;
+        if(materials && typeof materials === 'object' && !Array.isArray(materials)){
+          data.materials = materials;
+          // 効果定義を反映した後に、所持数と更新通知をまとめて返す。
+        }
+        network.updateServerClock(state, data.serverTime);
+        if(data.viewport){
+          network.applyViewportResponse(data.viewport, state);
+          network.scheduleMissingChunkRecovery(state, null);
+        }else if(data.self){
+          network.applySelfMovement(state, data.self, data.serverTime);
+        }
+        const profile = state.selfProfile || {};
+        for(const key of ['materials', 'alchemyBook', 'alchemyDefinitions']){
+          if(data[key] && typeof data[key] === 'object') profile[key] = data[key];
+        }
+        if(Array.isArray(data.alchemyEffects)) profile.alchemyEffects = data.alchemyEffects;
+        state.selfProfile = profile;
+        if(materials && typeof materials === 'object' && !Array.isArray(materials)){
+          reply({ phase:'inventory', materials, definitions:profile.alchemyDefinitions || {},
+            source:'response' });
+        }
+        if(typeof data.station === 'string') state.alchemyStation = data.station;
+        if(body.action === 'use') effects.queueAlchemyUseFeedback(data, state);
+        effects.updateAlchemyEffectHud(state, data.serverTime, true);
+        return data;
+      };
+      // 設定ONなら使用前の book を省略。OFFなら従来の30秒判定を使う。
+      const forceSkipBook = args.action === 'use' && args.skipBeforeUse === true;
+      const age = Date.now() - Number(args.inventoryUpdatedAt || 0);
+      const cached = state.selfProfile;
+      const skipBook = forceSkipBook || (args.action === 'use' && args.inventoryUpdatedAt > 0
+        && age >= 0 && age <= 30000
+        && cached?.materials && typeof cached.materials === 'object'
+        && !Array.isArray(cached.materials)
+        && typeof cached.alchemyDefinitions?.[args.key]?.name === 'string'
+        && Array.isArray(cached.alchemyDefinitions[args.key].effects));
+      if(!skipBook) await request({ action:'book' });
+      const profile = state.selfProfile || {};
+      const definitions = profile.alchemyDefinitions || {};
+      const items = Object.entries(profile.materials || {}).flatMap(([key, value]) => {
+        const qty = Math.floor(Number(value));
+        return key.startsWith('consumable:alchemy:') && Number.isFinite(qty) && qty > 0
+          ? [{ key, qty, name:String(definitions[key]?.name || '不明なポーション') }] : [];
+      });
+      if(args.action === 'book'){
+        reply({ ok:true, items });
+        return;
+      }
+      const definition = definitions[args.key];
+      if(forceSkipBook && (!definition || !Array.isArray(definition.effects))){
+        throw new Error('アイテムの効果情報が未取得です。公式の「バックパック・錬金術」を一度開くか、使用前の読み込みを省略する設定をOFFにしてください。');
+      }
+      // 強制省略時は古い所持数で判定せず、使用結果をサーバーに確認する。
+      const usedItem = items.find(item => item.key === args.key)
+        || (forceSkipBook ? { key:args.key, name:String(definition.name || '不明なポーション') } : null);
+      if(!usedItem){
+        reply({ ok:false, empty:true, message:'消費アイテムが残っていません。' });
+        return;
+      }
+      const usesLibra = Array.isArray(definition?.effects)
+        && definition.effects.some(effect => effects.alchemyEffectChannel(effect) === 'zodiac:libra');
+      let summonLoadout = null;
+      if(usesLibra){
+        const armory = await import('/PixiJS/armory/armoryHandler.js');
+        summonLoadout = await armory.getLibraSummonLoadout();
+      }
+      // 取得を行った場合は従来どおり1秒待つ。
+      // 取得を省略した場合は、最終更新から1秒に満たない分だけ待つ。
+      // Libra は装備情報の通信が発生し得るため、従来の待機を維持する。
+      // 1000ms は対策用の値であり、サーバーの制限値を示すものではない。
+      const waitMs = (!skipBook || usesLibra)
+        ? 1000
+        : Math.max(0, 1000 - (Date.now() - Number(args.inventoryUpdatedAt || 0)));
+      if(waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+      // 待機中に期限を過ぎた場合は、request 内のチェックで送信を中止する。
+      const data = await request({
+        action:'use',
+        use:{ consumable_key:args.key, ...(summonLoadout ? { summon_loadout:summonLoadout } : {}) },
+        viewport:state.viewportMode || 'desktop',
+        knownChunks:network.buildKnownChunksArray(state)
+      });
+      const usedMessage = `${usedItem.name} を使用しました`;
+      reply({ ok:true, message:typeof data.message === 'string' && data.message
+        ? data.message.replace(/アイテムを使用しました/g, () => usedMessage)
+        : `${usedMessage}。` });
+    }catch(error){
+      const prefix = error?.status === 204 ? ''
+        : useConfirmed ? '使用済みですが、画面への反映に失敗しました。\n'
+        : (useSent ? '使用リクエスト送信後の応答です。再実行前に所持数をご確認ください。\n' : '');
+      reply({ ok:false, message:prefix + (error?.message || '通信に失敗しました') });
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+
+  function requestAlphaAlchemy(action, key = '', source = ''){
+    return new Promise(resolve => {
+      const event = `dba-alchemy-${crypto.randomUUID()}`;
+      const script = document.createElement('script');
+      script.type = 'module';
+      let timer;
+      const finish = result => {
+        clearTimeout(timer);
+        window.removeEventListener(event, receive);
+        script.remove();
+        resolve(result);
+      };
+      const receive = e => {
+        try{
+          const result = JSON.parse(e.detail);
+          updateAlphaShortcutQuantities(result.materials, result.definitions, result.source);
+          if(result.phase === 'inventory') return;
+          finish(result);
+        }catch(_e){
+          finish({ ok:false, message:'公式ページからの応答を読み取れませんでした' });
+        }
+      };
+      window.addEventListener(event, receive);
+      timer = setTimeout(() => finish({ ok:false,
+        message:'公式ページとの連携がタイムアウトしました。使用操作の場合は、再実行前に所持数をご確認ください。'
+      }), 25000);
+      script.onerror = () => finish({ ok:false, message:'公式ページとの連携スクリプトを起動できませんでした' });
+      const args = { action, key, event, source,
+        skipBeforeUse:loadAlphaShortcutOptions().skipBeforeUse,
+        inventoryUpdatedAt:DBA_ALPHA_SC.inventoryUpdatedAt, deadline:Date.now() + 20000 };
+      script.textContent = `(${alphaAlchemyPageRequest.toString()})(${JSON.stringify(args)});`;
+      document.documentElement.appendChild(script);
+    });
+  }
+
+  function showAlphaShortcutDialog(message, question = false){
+    return new Promise(resolve => {
+      if(!question){
+        clearTimeout(DBA_ALPHA_SC.timer);
+        const notice = document.getElementById('dba-m-alpha-sc-notice');
+        if(notice?.open) notice.close();
+      }
+      const dlg = document.createElement('dialog');
+      dlg.className = 'dba-sc-dialog';
+      dlg.id = question ? 'dba-m-alpha-sc-overwrite' : 'dba-m-alpha-sc-result';
+      const text = document.createElement('p');
+      text.textContent = String(message);
+      dlg.appendChild(text);
+      let timer;
+      let answer = false;
+      if(question){
+        const row = document.createElement('div');
+        row.className = 'dba-sc-dialog-buttons';
+        dlg.appendChild(row);
+        for(const label of ['はい', 'いいえ']){
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'dba-btn-mini';
+          btn.textContent = label;
+          btn.addEventListener('click', () => { answer = label === 'はい'; dlg.close(); });
+          row.appendChild(btn);
+        }
+      }
+      dlg.addEventListener('close', () => {
+        clearTimeout(timer);
+        dlg.remove();
+        resolve(answer);
+      }, { once:true });
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      if(!question) timer = setTimeout(() => dlg.close(), 1200);
+    });
+  }
+
+  // 公式ページの import map から、武具庫と同じモジュールを利用する。
+  async function alphaArmoryPageRequest(args){
+    const reply = result => window.dispatchEvent(new CustomEvent(args.event, {
+      detail:JSON.stringify(result)
+    }));
+    try{
+      if(location.pathname !== '/alpha') throw new Error('アドベンチャーモード専用です');
+      if(!['list', 'activate'].includes(args.action)) throw new Error('操作が不正です');
+      const armory = await import('/PixiJS/armory/armoryHandler.js');
+      await armory.refreshArmory();
+      if(Date.now() >= args.deadline) throw new Error('武具庫の取得がタイムアウトしました。');
+      const state = armory.getArmoryState();
+      const loadouts = state.loadouts.filter(entry =>
+        Number.isSafeInteger(entry.slot) && entry.slot > 0);
+      if(args.action === 'list'){
+        reply({ok:true, loadouts:loadouts.map(entry => ({
+          kind:'loadout', target:String(entry.slot), label:`ロードアウト${entry.slot}`
+        })).sort((a, b) => Number(a.target) - Number(b.target))});
+        return;
+      }
+      const slot = Number(args.target);
+      const loadout = loadouts.find(entry => entry.slot === slot);
+      if(!loadout) throw new Error('指定したロードアウトが見つかりません。');
+      const incomplete = ['weapon', 'armor', 'necklace'].some(kind => !loadout[`${kind}Key`]);
+      if(incomplete && !window.confirm('未設定の装備枠があります。このロードアウトを装備しますか？')){
+        reply({ok:false, cancelled:true});
+        return;
+      }
+      if(Date.now() >= args.deadline) throw new Error('操作がタイムアウトしました。もう一度操作してください。');
+      // サーバーへの装備送信・再取得・ゲーム画面への更新通知は公式処理に任せる。
+      await armory.activateLoadout(slot);
+      reply({ok:true});
+    }catch(error){
+      reply({ok:false, message:error?.message || '武具庫の処理に失敗しました。'});
+    }
+  }
+
+  function requestAlphaArmory(action, target = ''){
+    return new Promise(resolve => {
+      const event = `dba-alpha-armory-${crypto.randomUUID()}`;
+      const script = document.createElement('script');
+      script.type = 'module';
+      let timer;
+      let done = false;
+      const finish = result => {
+        if(done) return;
+        done = true;
+        clearTimeout(timer);
+        window.removeEventListener(event, receive);
+        script.remove();
+        resolve(result);
+      };
+      const receive = e => {
+        try{ finish(JSON.parse(e.detail)); }
+        catch(_error){ finish({ok:false, message:'武具庫からの応答を読み取れませんでした。'}); }
+      };
+      window.addEventListener(event, receive);
+      timer = setTimeout(() => finish({ok:false,
+        message:'武具庫との連携がタイムアウトしました。装備操作の場合は、再実行前に現在の装備をご確認ください。'
+      }), 25000);
+      script.onerror = () => finish({ok:false, message:'武具庫との連携スクリプトを起動できませんでした。'});
+      const args = {action, target, event, deadline:Date.now() + 20000};
+      script.textContent = `(${alphaArmoryPageRequest.toString()})(${JSON.stringify(args)});`;
+      document.documentElement.appendChild(script);
+    });
+  }
+
+  async function loadAlphaShortcutLoadouts(){
+    if(DBA_ALPHA_SC.armoryLoading) return;
+    DBA_ALPHA_SC.armoryLoading = true;
+    DBA_ALPHA_SC.armoryError = '';
+    renderAlphaShortcutSettings();
+    try{
+      const result = await requestAlphaArmory('list');
+      DBA_ALPHA_SC.loadouts = result.ok && Array.isArray(result.loadouts) ? result.loadouts : [];
+      DBA_ALPHA_SC.armoryError = result.ok ? '' : (result.message || '武具庫の取得に失敗しました。');
+    }catch(error){
+      DBA_ALPHA_SC.loadouts = [];
+      DBA_ALPHA_SC.armoryError = error?.message || '武具庫の取得に失敗しました。';
+    }finally{
+      DBA_ALPHA_SC.armoryLoading = false;
+      renderAlphaShortcutSettings();
+    }
+  }
+
+  async function loadAlphaShortcutItems(){
+    if(DBA_ALPHA_SC.loading) return;
+    DBA_ALPHA_SC.loading = true;
+    DBA_ALPHA_SC.itemError = '';
+    renderAlphaShortcutSettings();
+    try{
+      const result = await requestAlphaAlchemy('book');
+      DBA_ALPHA_SC.items = result.ok && Array.isArray(result.items) ? result.items : [];
+      DBA_ALPHA_SC.itemError = result.ok ? '' : (result.message || '取得に失敗しました');
+    }catch(error){
+      DBA_ALPHA_SC.items = [];
+      DBA_ALPHA_SC.itemError = error?.message || '取得に失敗しました';
+    }finally{
+      DBA_ALPHA_SC.loading = false;
+      renderAlphaShortcutSettings();
+    }
+  }
+
+  async function selectAlphaShortcutCandidate(candidate){
+    if(DBA_ALPHA_SC.choosing) return;
+    const index = DBA_ALPHA_SC.tab;
+    const rosterId = DBA_ALPHA_SC.rosterId;
+    const session = DBA_ALPHA_SC.session;
+    DBA_ALPHA_SC.selected[index] = { ...candidate };
+    const current = DBA_ALPHA_SC.labels[index] || '';
+    DBA_ALPHA_SC.choosing = true;
+    try{
+      const replace = !current.trim() || await showAlphaShortcutDialog('登録名を上書きしますか？', true);
+      if(session !== DBA_ALPHA_SC.session || rosterId !== getActiveRoster().store.activeId) return;
+      if(replace) DBA_ALPHA_SC.labels[index] = candidate.label;
+    }finally{
+      DBA_ALPHA_SC.choosing = false;
+      renderAlphaShortcutSettings();
+    }
+  }
+
+  function showAlphaShortcutNotice(text){
+    let dlg = document.getElementById('dba-m-alpha-sc-notice');
+    if(!dlg){
+      dlg = document.createElement('dialog');
+      dlg.id = 'dba-m-alpha-sc-notice';
+      dlg.setAttribute('aria-live', 'polite');
+      document.body.appendChild(dlg);
+    }
+    clearTimeout(DBA_ALPHA_SC.timer);
+    dlg.textContent = text;
+    if(!dlg.open) dlg.show();
+    DBA_ALPHA_SC.timer = setTimeout(() => { if(dlg.open) dlg.close(); }, 2000);
+  }
+
+  function refreshAlphaShortcutButtons(){
+    const row = document.getElementById('dba-alpha-sc-row');
+    if(!row) return;
+    const { roster } = getActiveRoster();
+    const names = normalizeAlphaShortcuts(roster.alphaShortcuts, roster.presets);
+    const options = loadAlphaShortcutOptions();
+    row.style.setProperty('--dba-sc-max-width', `${options.customWidth ? options.maxWidth : 8}em`);
+    row.style.flexWrap = options.wrap ? 'wrap' : 'nowrap';
+    const count = alphaShortcutCount(options);
+    let visible = 0;
+    row.querySelectorAll('[data-sc-index]').forEach(btn => {
+      const i = Number(btn.dataset.scIndex);
+      const label = names[i]?.label || alphaShortcutSlotLabel(i);
+      const caption = btn.firstElementChild;
+      const isItem = names[i]?.kind === 'item';
+      const qty = isItem ? alphaShortcutQuantity(names[i].target) : null;
+      caption.classList.toggle('dba-sc-item-caption', isItem);
+      caption.replaceChildren();
+      if(isItem){
+        for(const [className, text] of [
+          ['dba-sc-item-name', label],
+          ['dba-sc-item-times', 'x'],
+          ['dba-sc-item-qty', qty === null ? '?' : String(qty)]
+        ]){
+          const span = document.createElement('span');
+          span.className = className;
+          span.textContent = text;
+          caption.appendChild(span);
+        }
+      }else{
+        caption.textContent = label;
+      }
+      btn.dataset.scDepleted = String(isItem && qty === 0);
+      btn.title = `${alphaShortcutSlotLabel(i)}: ${names[i]?.label || '未設定'}${isItem ? ` x${qty === null ? '?' : qty}` : ''}`;
+      const isSpacer = names[i]?.kind === 'spacer';
+      btn.dataset.scEmpty = String(!names[i]);
+      btn.hidden = i >= count || isSpacer || (options.hideEmpty && !names[i]);
+      const spacer = row.querySelector(`[data-sc-spacer-index="${i}"]`);
+      if(spacer){
+        spacer.hidden = i >= count || !isSpacer;
+        spacer.style.width = isSpacer ? `${names[i].width}px` : '0px';
+        if(!spacer.hidden) visible++;
+      }
+      if(!btn.hidden) visible++;
+    });
+    const empty = row.querySelector('#dba-alpha-sc-empty');
+    if(empty) empty.hidden = visible > 0;
+    for(const btn of row.querySelectorAll('button')) btn.disabled = DBA_ALPHA_SC.busy;
+    const rosterButton = document.getElementById('dba-btn-roster');
+    if(rosterButton) rosterButton.disabled = DBA_ALPHA_SC.busy;
+    for(const id of ['dba-alpha-sc-settings', 'dba-alpha-environment']){
+      const btn = document.getElementById(id);
+      if(btn) btn.disabled = DBA_ALPHA_SC.busy;
+    }
+  }
+
+  async function equipAlphaShortcut(index){
+    if(DBA_ALPHA_SC.busy) return;
+    const { store, roster } = getActiveRoster();
+    const shortcut = normalizeAlphaShortcuts(roster.alphaShortcuts, roster.presets)[index];
+    if(!shortcut){
+      showAlphaShortcutNotice('「Shortcut設定」からショートカットを登録してください。');
+      return;
+    }
+    if(shortcut.kind === 'spacer') return;
+    if(shortcut.kind === 'item' && !loadAlphaShortcutOptions().skipBeforeUse
+      && isAlphaShortcutInventoryFresh()
+      && alphaShortcutQuantity(shortcut.target) === 0){
+      showAlphaShortcutNotice('消費アイテムが残っていません。');
+      return;
+    }
+    DBA_ALPHA_SC.busy = true;
+    refreshAlphaShortcutButtons();
+    showAlphaShortcutNotice(`「${shortcut.label}」を${shortcut.kind === 'item' ? '使用' : '装備'}します。`);
+    try{
+      if(shortcut.kind === 'loadout'){
+        const result = await requestAlphaArmory('activate', shortcut.target);
+        if(result.cancelled){
+          showAlphaShortcutNotice('装備をキャンセルしました。');
+        }else if(!result.ok){
+          await showAlphaShortcutDialog(result.message || 'ロードアウトの装備に失敗しました。');
+        }else if(getActiveRoster().store.activeId === store.activeId){
+          saveAutoEquipLastPreset('');
+        }
+        return;
+      }
+      if(shortcut.kind === 'item'){
+        const result = await requestAlphaAlchemy('use', shortcut.target);
+        DBA_ALPHA_SC.items = [];
+        if(result.empty){
+          showAlphaShortcutNotice('消費アイテムが残っていません。');
+          return;
+        }
+        await showAlphaShortcutDialog(result.message || '応答メッセージがありませんでした。');
+        return;
+      }
+      // SCからは削除確認を開かず、失敗を短い通知で伝える。
+      const result = await equipPresetByName(shortcut.target, false);
+      if(!result?.ok){
+        showAlphaShortcutNotice(result?.missing
+          ? '装備アイテムが見つかりませんでした。'
+          : '装備変更を確認できませんでした。');
+        return;
+      }
+      if(getActiveRoster().store.activeId === store.activeId) saveAutoEquipLastPreset('');
+      try{
+        const pageWindow = (typeof unsafeWindow !== 'undefined' && unsafeWindow)
+          ? unsafeWindow : window;
+        pageWindow.dispatchEvent(new pageWindow.CustomEvent('armory:loadout-activated'));
+      }catch(error){
+        console.warn('[DBA] SC refresh failed', error);
+        showAlphaShortcutNotice('装備済みですが画面更新に失敗しました。再読み込みしてください。');
+      }
+    }catch(error){
+      console.warn('[DBA] SC equip failed', error);
+      await showAlphaShortcutDialog('ショートカットの実行に失敗しました。消費アイテムの場合は所持数をご確認ください。');
+    }finally{
+      DBA_ALPHA_SC.busy = false;
+      refreshAlphaShortcutButtons();
+    }
+  }
+
+  function renderAlphaShortcutSettings(){
+    const dlg = document.getElementById('dba-m-alpha-shortcuts');
+    if(!dlg) return;
+    const { store, roster } = getActiveRoster();
+    const presets = roster.presets || {};
+    const assigned = normalizeAlphaShortcuts(roster.alphaShortcuts, presets);
+    if(DBA_ALPHA_SC.rosterId !== store.activeId){
+      DBA_ALPHA_SC.rosterId = store.activeId;
+      DBA_ALPHA_SC.session++;
+      DBA_ALPHA_SC.selected = assigned.map(sc => sc ? { ...sc } : null);
+      DBA_ALPHA_SC.labels = assigned.map(sc => sc?.label || '');
+    }
+    const options = loadAlphaShortcutOptions();
+    const count = alphaShortcutCount(options);
+    dlg.querySelector('#dba-sc-tabs').style.flexWrap = options.wrap ? 'wrap' : 'nowrap';
+    DBA_ALPHA_SC.tab = Math.max(0, Math.min(DBA_ALPHA_SC.tab, count - 1));
+    const index = DBA_ALPHA_SC.tab;
+    const selected = DBA_ALPHA_SC.selected[index];
+    dlg.querySelector('#dba-sc-current').textContent = assigned[index]?.label || '未設定';
+    dlg.querySelector('#dba-sc-unregister').disabled = !assigned[index];
+    const input = dlg.querySelector('#dba-sc-label');
+    const isSpacer = selected?.kind === 'spacer';
+    input.disabled = isSpacer;
+    const draftLabel = isSpacer
+      ? (Number.isFinite(selected.width) ? `スペーサー（${selected.width}px）` : 'スペーサー')
+      : (DBA_ALPHA_SC.labels[index] || '');
+    if(input.value !== draftLabel) input.value = draftLabel;
+    const valid = isSpacer
+      ? Number.isInteger(selected.width) && selected.width >= 1 && selected.width <= 30
+      : selected && (selected.kind === 'item'
+        || (selected.kind === 'loadout' && /^[1-9]\d*$/.test(selected.target)
+          && Number.isSafeInteger(Number(selected.target)))
+        || (selected.kind === 'preset' && Object.prototype.hasOwnProperty.call(presets, selected.target)));
+    dlg.querySelector('#dba-sc-register').disabled = !valid || (!isSpacer && !input.value.trim()) || DBA_ALPHA_SC.choosing;
+    dlg.querySelectorAll('[data-sc-source]').forEach(btn => {
+      btn.setAttribute('aria-selected', String(btn.dataset.scSource === DBA_ALPHA_SC.source));
+    });
+    dlg.querySelector('#dba-sc-candidate-list').setAttribute('aria-labelledby',
+      `dba-sc-source-${DBA_ALPHA_SC.source}`);
+    dlg.querySelectorAll('[data-sc-tab]').forEach(btn => {
+      const slot = Number(btn.dataset.scTab);
+      btn.hidden = slot >= count;
+      const active = slot === index;
+      btn.setAttribute('aria-selected', String(active));
+    });
+    dlg.querySelector('#dba-sc-panel').setAttribute('aria-labelledby', `dba-sc-tab-${index + 1}`);
+    const list = dlg.querySelector('#dba-sc-candidate-list');
+    const top = list.scrollTop;
+    list.replaceChildren();
+    if(DBA_ALPHA_SC.source === 'extra'){
+      list.innerHTML = `
+        <div id="dba-sc-extra-spacer">
+          <label><input type="radio" name="dba-sc-extra" id="dba-sc-spacer-choice"> ショートカットの代わりにスペーサーを設置する。</label>
+          <input type="number" id="dba-sc-spacer-width" min="1" max="30" step="1" required aria-label="スペーサーの横幅">
+          <span>px</span>
+        </div>`;
+      const radio = list.querySelector('#dba-sc-spacer-choice');
+      const width = list.querySelector('#dba-sc-spacer-width');
+      radio.checked = isSpacer;
+      width.value = isSpacer ? (Number.isFinite(selected.width) ? String(selected.width) : '') : '16';
+      radio.disabled = DBA_ALPHA_SC.choosing;
+      width.disabled = DBA_ALPHA_SC.choosing;
+      const update = () => {
+        if(!radio.checked) return;
+        const n = width.valueAsNumber;
+        DBA_ALPHA_SC.selected[index] = { kind:'spacer', width:n };
+        input.disabled = true;
+        input.value = width.validity.valid ? `スペーサー（${n}px）` : 'スペーサー';
+        dlg.querySelector('#dba-sc-register').disabled = !width.validity.valid || DBA_ALPHA_SC.choosing;
+      };
+      radio.addEventListener('change', update);
+      width.addEventListener('input', update);
+      list.scrollTop = top;
+      return;
+    }
+    const names = [...new Set([
+      ...(Array.isArray(roster.presetOrder) ? roster.presetOrder : []),
+      ...Object.keys(presets)
+    ])].filter(n => Object.prototype.hasOwnProperty.call(presets, n));
+    const candidates = DBA_ALPHA_SC.source === 'preset'
+      ? names.map(name => ({ kind:'preset', target:name, label:name }))
+      : DBA_ALPHA_SC.source === 'loadout'
+        ? DBA_ALPHA_SC.loadouts
+        : DBA_ALPHA_SC.items.map(item => ({ kind:'item', target:item.key, label:item.name, qty:item.qty }));
+    if(DBA_ALPHA_SC.source === 'loadout' && (DBA_ALPHA_SC.armoryLoading || DBA_ALPHA_SC.armoryError)){
+      list.textContent = DBA_ALPHA_SC.armoryLoading ? '読み込み中…' : DBA_ALPHA_SC.armoryError;
+    }else if(DBA_ALPHA_SC.source === 'item' && (DBA_ALPHA_SC.loading || DBA_ALPHA_SC.itemError)){
+      list.textContent = DBA_ALPHA_SC.loading ? '読み込み中…' : DBA_ALPHA_SC.itemError;
+    }else{
+      for(const candidate of candidates){
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'dba-sc-preset';
+        btn.textContent = candidate.label + (candidate.kind === 'item' ? `（所持数：${candidate.qty}）` : '');
+        btn.title = candidate.target;
+        btn.disabled = DBA_ALPHA_SC.choosing;
+        btn.setAttribute('aria-pressed', String(candidate.kind === selected?.kind && candidate.target === selected?.target));
+        btn.addEventListener('click', () => selectAlphaShortcutCandidate(candidate));
+        list.appendChild(btn);
+      }
+      if(!candidates.length) list.textContent = DBA_ALPHA_SC.source === 'preset'
+        ? 'プリセットがありません。'
+        : DBA_ALPHA_SC.source === 'loadout' ? 'ロードアウトがありません。'
+        : '使用できる消費アイテムがありません。';
+    }
+    list.scrollTop = top;
+  }
+
+  function saveAlphaShortcutSelection(clear){
+    const { store, roster } = getActiveRoster();
+    // 設定画面を開いてから別ロスターへ切り替わった場合は、選択し直す。
+    if(store.activeId !== DBA_ALPHA_SC.rosterId){
+      renderAlphaShortcutSettings();
+      return;
+    }
+    const index = DBA_ALPHA_SC.tab;
+    const selected = DBA_ALPHA_SC.selected[index];
+    const label = (DBA_ALPHA_SC.labels[index] || '').trim();
+    if(DBA_ALPHA_SC.choosing) return;
+    if(!clear && (!selected || (selected.kind !== 'spacer' && !label))) return;
+    if(!clear && selected.kind === 'spacer'
+      && (!Number.isInteger(selected.width) || selected.width < 1 || selected.width > 30)) return;
+    const names = normalizeAlphaShortcuts(roster.alphaShortcuts, roster.presets);
+    names[index] = clear ? null : selected.kind === 'spacer'
+      ? { kind:'spacer', width:selected.width }
+      : { kind:selected.kind, target:selected.target, label };
+    roster.alphaShortcuts = normalizeAlphaShortcuts(names, roster.presets);
+    roster.updatedAt = nowIso();
+    DBA_ALPHA_SC.selected[index] = roster.alphaShortcuts[index];
+    DBA_ALPHA_SC.labels[index] = roster.alphaShortcuts[index]?.label || '';
+    saveRosterStore(store);
+    renderAlphaShortcutSettings();
+  }
+
+  function openAlphaShortcutSettings(){
+    let dlg = document.getElementById('dba-m-alpha-shortcuts');
+    if(!dlg){
+      dlg = document.createElement('dialog');
+      dlg.id = 'dba-m-alpha-shortcuts';
+      dlg.className = 'dba-m-std';
+      dlg.setAttribute('aria-labelledby', 'dba-sc-title');
+      dlg.innerHTML = `
+        <div class="dba-modal__top">
+          <div class="dba-modal__title" id="dba-sc-title">Shortcut設定</div>
+          <button type="button" class="dba-btn-mini" id="dba-sc-options-open">オプション</button>
+          <button type="button" class="dba-btn-x" data-sc-close aria-label="閉じる">×</button>
+        </div>
+        <div class="dba-modal__mid">
+          <div id="dba-sc-tabs" role="tablist" aria-label="ショートカット"></div>
+          <div id="dba-sc-panel" role="tabpanel">
+            <div id="dba-sc-registration">
+              <span>登録中のショートカット：<strong id="dba-sc-current"></strong></span>
+              <button type="button" class="dba-btn-mini" id="dba-sc-unregister">登録解除</button>
+            </div>
+            <div id="dba-sc-source-tabs" role="tablist" aria-label="登録候補のカテゴリー">
+              <button type="button" class="dba-btn-mini" id="dba-sc-source-preset" data-sc-source="preset" role="tab" aria-controls="dba-sc-candidate-list">装備ロスター</button>
+              <button type="button" class="dba-btn-mini" id="dba-sc-source-loadout" data-sc-source="loadout" role="tab" aria-controls="dba-sc-candidate-list">武具庫</button>
+              <button type="button" class="dba-btn-mini" id="dba-sc-source-item" data-sc-source="item" role="tab" aria-controls="dba-sc-candidate-list">バックパック</button>
+              <button type="button" class="dba-btn-mini" id="dba-sc-source-extra" data-sc-source="extra" role="tab" aria-controls="dba-sc-candidate-list">エクストラ</button>
+            </div>
+            <div id="dba-sc-candidate-list" role="tabpanel"></div>
+            <div id="dba-sc-register-row">
+              <label for="dba-sc-label">登録名</label>
+              <input type="text" id="dba-sc-label" autocomplete="off">
+              <button type="button" class="dba-btn-apply" id="dba-sc-register">登録する</button>
+            </div>
+          </div>
+        </div>
+        <div class="dba-modal__bot">
+          <button type="button" class="dba-btn-close" data-sc-close>閉じる</button>
+        </div>`;
+      for(let i = 0; i < 20; i++){
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'dba-btn-mini';
+        tab.id = `dba-sc-tab-${i + 1}`;
+        tab.dataset.scTab = String(i);
+        tab.textContent = alphaShortcutSlotLabel(i);
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-controls', 'dba-sc-panel');
+        tab.addEventListener('click', () => {
+          DBA_ALPHA_SC.tab = i;
+          renderAlphaShortcutSettings();
+          dlg.querySelector('#dba-sc-candidate-list').scrollTop = 0;
+        });
+        dlg.querySelector('#dba-sc-tabs').appendChild(tab);
+      }
+      dlg.querySelector('#dba-sc-options-open').addEventListener('click', openAlphaShortcutOptions);
+      dlg.querySelectorAll('[data-sc-close]').forEach(btn => {
+        btn.addEventListener('click', () => dlg.close());
+      });
+      dlg.querySelectorAll('[data-sc-source]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          DBA_ALPHA_SC.source = btn.dataset.scSource;
+          renderAlphaShortcutSettings();
+          dlg.querySelector('#dba-sc-candidate-list').scrollTop = 0;
+          if(DBA_ALPHA_SC.source === 'loadout') loadAlphaShortcutLoadouts();
+          if(DBA_ALPHA_SC.source === 'item') loadAlphaShortcutItems();
+        });
+      });
+      dlg.querySelector('#dba-sc-label').addEventListener('input', e => {
+        DBA_ALPHA_SC.labels[DBA_ALPHA_SC.tab] = e.target.value;
+        renderAlphaShortcutSettings();
+      });
+      dlg.addEventListener('close', () => { DBA_ALPHA_SC.session++; });
+      dlg.querySelector('#dba-sc-unregister').addEventListener('click', () => saveAlphaShortcutSelection(true));
+      dlg.querySelector('#dba-sc-register').addEventListener('click', () => saveAlphaShortcutSelection(false));
+      document.body.appendChild(dlg);
+    }
+    DBA_ALPHA_SC.rosterId = null;
+    renderAlphaShortcutSettings();
+    if(!dlg.open) dlg.showModal();
+    if(DBA_ALPHA_SC.source === 'loadout') loadAlphaShortcutLoadouts();
+    if(DBA_ALPHA_SC.source === 'item') loadAlphaShortcutItems();
+  }
+
+  function buildAlphaShortcutRow(){
+    const row = document.createElement('div');
+    row.id = 'dba-alpha-sc-row';
+    for(let i = 0; i < 20; i++){
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dba-btn-fn';
+      btn.dataset.scIndex = String(i);
+      btn.id = `dba-alpha-sc-${i + 1}`;
+      btn.appendChild(document.createElement('span'));
+      btn.addEventListener('click', () => equipAlphaShortcut(i));
+      row.appendChild(btn);
+      const spacer = document.createElement('span');
+      spacer.className = 'dba-sc-spacer';
+      spacer.dataset.scSpacerIndex = String(i);
+      spacer.setAttribute('aria-hidden', 'true');
+      spacer.hidden = true;
+      row.appendChild(spacer);
+    }
+    const empty = document.createElement('span');
+    empty.id = 'dba-alpha-sc-empty';
+    empty.textContent = '登録済みのショートカットがありません。';
+    empty.hidden = true;
+    row.appendChild(empty);
+    if(!DBA_ALPHA_SC.bound){
+      DBA_ALPHA_SC.bound = true;
+      const sync = () => {
+        refreshAlphaShortcutButtons();
+        if(document.getElementById('dba-m-alpha-shortcuts')?.open) renderAlphaShortcutSettings();
+      };
+      const syncQuantities = bindAlphaShortcutQuantitySync();
+      window.addEventListener('dba-roster-saved', sync);
+      window.addEventListener('focus', () => {
+        sync();
+        syncQuantities();
+      });
+      setTimeout(syncQuantities, 1500);
+    }
+    return row;
+  }
+
+  function initAlphaFunctionSection(){
+    const viewport = document.getElementById('game-viewport');
+    if(!viewport || !viewport.parentElement) return false;
+
+    viewport.parentElement.classList.add('dba-alpha-host');
+    let bar = document.getElementById('dba-function-section');
+    if(!bar){
+      bar = document.createElement('section');
+      bar.id = 'dba-function-section';
+      bar.className = 'dba-alpha-function-section';
+      bar.appendChild(buildAlphaShortcutRow());
+      const row = document.createElement('div');
+      row.id = 'dba-fn-buttons-row';
+      const environment = buildEnvironmentButton();
+      environment.id = 'dba-alpha-environment';
+      row.appendChild(environment);
+      const scSettings = document.createElement('button');
+      scSettings.type = 'button';
+      scSettings.id = 'dba-alpha-sc-settings';
+      scSettings.className = 'dba-btn-fn';
+      scSettings.innerHTML = 'Shortcut<br>設定';
+      scSettings.addEventListener('click', openAlphaShortcutSettings);
+      row.appendChild(scSettings);
+      row.appendChild(buildRosterFunctionButton());
+      bar.appendChild(row);
+    }
+    if(viewport.nextElementSibling !== bar){
+      viewport.insertAdjacentElement('afterend', bar);
+    }
+    refreshAlphaShortcutButtons();
+    return true;
+  }
+
+  function buildFunctionSection() {
+    const bar = document.createElement('section');
+    bar.id = 'dba-function-section';
+
+    // 3段構造：上=header情報 / 中=progress / 下=ボタン群
+    const headerHost = document.createElement('div');
+    headerHost.id = 'dba-fn-header-host';
+    const progressHost = document.createElement('div');
+    progressHost.id = 'dba-fn-progress-host';
+    const buttonsRow = document.createElement('div');
+    buttonsRow.id = 'dba-fn-buttons-row';
+
+    const btnSettings = document.createElement('button');
+    btnSettings.type = 'button';
+    btnSettings.className = 'dba-btn-fn';
+    btnSettings.innerHTML = '環境<br>設定';
+    btnSettings.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openSettingsModal();
+    });
+
+    const btnRapid = document.createElement('button');
+    btnRapid.type = 'button';
+    btnRapid.className = 'dba-btn-fn';
+    btnRapid.id = 'dba-btn-rapid-attack';
+    function syncRapidBtn(){
+      const on = loadRapidAttackEnabled();
+      btnRapid.dataset.on = on ? '1' : '0';
+      btnRapid.innerHTML = on ? 'ラピッド攻撃<br>ON' : 'ラピッド攻撃<br>OFF';
+    }
+    syncRapidBtn();
+    btnRapid.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = !loadRapidAttackEnabled();
+      saveRapidAttackEnabled(next);
+      syncRapidBtn();
+    });
+    bindFnButtonTooltip(
+      btnRapid,
+      '「セル詳細」を経由せず 攻撃や移動 を行います'
+    );
+
+    const btnRoster = buildRosterFunctionButton();
+// ------------------------------------------------------------
+// △ここまで△ 「ファンクションセクション」専用関数
+// ============================================================
 
     const btnBattleInfo = document.createElement('button');
     btnBattleInfo.type = 'button';
@@ -26772,6 +28409,40 @@ function avatarsKeyToMap(avatarsKey){
 
   function injectWhenReady() {
     addStyle(CSS);
+
+    if(isAlphaPage){
+      window.addEventListener('wheel', handleAlphaRosterWheel, {
+        capture: true,
+        passive: false
+      });
+
+      try{ migrateSaveDataToGen3IfNeeded(); }catch(_e){}
+      try{ applyBaseFontSize(loadSettings()?.ui?.baseFontPx); }catch(_e){}
+
+      let observer = null;
+      const doAlphaInsert = () => {
+        if(initAlphaFunctionSection()){
+          if(observer){
+            observer.disconnect();
+            observer = null;
+          }
+          return;
+        }
+        // ゲーム画面が遅れて生成される場合だけ、生成完了まで待つ。
+        if(!observer && document.documentElement){
+          observer = new MutationObserver(doAlphaInsert);
+          observer.observe(document.documentElement, { childList:true, subtree:true });
+        }
+      };
+      if(document.readyState === 'loading'){
+        document.addEventListener('DOMContentLoaded', doAlphaInsert, { once:true });
+      }else{
+        doAlphaInsert();
+      }
+      window.addEventListener('load', doAlphaInsert, { once:true });
+      window.addEventListener('pageshow', doAlphaInsert);
+      return;
+    }
 
     if(isArenaPage){
       const doArenaInsert = () => {
