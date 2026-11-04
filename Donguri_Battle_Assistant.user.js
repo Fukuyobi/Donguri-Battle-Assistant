@@ -1,21 +1,22 @@
 // ==UserScript==
 // @name         Donguri Battle Assistant
-// @namespace    https://donguri.5ch.io/
-// @version      10.2.7.1
+// @namespace    https://donguri.world/
+// @version      11.0.2.1
 // @description  5ちゃんねるのどんぐりシステムから派生したゲームの操作性を改善するためのユーザースクリプト
 // @author       福呼び草 / Assistant: ChatGPT（OpenAI）
 // @license      MIT license
-// @match        https://donguri.5ch.io/teambattle*
-// @match        https://donguri.5ch.io/arena
 // @match        https://donguri.world/alpha*
-// @match        https://donguri.5ch.io/arenalogs
-// @match        https://donguri.5ch.io/bag
-// @match        https://donguri.5ch.io/
 // @match        https://donguri.world/teambattle*
 // @match        https://donguri.world/arena
 // @match        https://donguri.world/arenalogs
 // @match        https://donguri.world/bag
 // @match        https://donguri.world/
+// @match        https://donguri.5ch.io/alpha*
+// @match        https://donguri.5ch.io/teambattle*
+// @match        https://donguri.5ch.io/arena
+// @match        https://donguri.5ch.io/arenalogs
+// @match        https://donguri.5ch.io/bag
+// @match        https://donguri.5ch.io/
 // @run-at       document-start
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -65,7 +66,7 @@
   // =========================
   // スクリプト自身のバージョン（スクリプト情報表示用）
   // =========================
-  const DBA_VERSION = '10.2.7.1';
+  const DBA_VERSION = '11.0.2.1';
 
   console.log('[DBA] BOOT', 'ver=', DBA_VERSION, 'href=', location.href);
 
@@ -28407,10 +28408,405 @@ function avatarsKeyToMap(avatarsKey){
     return bar;
   }
 
+  // ============================================================
+  // ▽ここから▽ Inventory：並び替え
+  // ------------------------------------------------------------
+  function initAlphaInventorySort(){
+    if(initAlphaInventorySort.started) return;
+    initAlphaInventorySort.started = true;
+
+    const STORAGE_KEY = 'dba.alpha.inventorySort.v1';
+    const MODAL_ID = 'stackable-inventory-modal';
+    const CONTROL_ID = 'stackable-inventory-sort';
+    const SELECT_ID = 'dba-alpha-inventory-sort-select';
+
+    // data-inventory-key → sort_order
+    // DBA_Sort_Rules.htm の72件を、規則性のあるグループ単位で登録する。
+    // 個別追加の場合も register(key, [各階層の番号]) で登録できる。
+    const materialRules = new Map();
+    const register = (key, parts) => {
+      const sortOrder = parts.map((value, index) =>
+        String(value).padStart(index === 0 ? 2 : 3, '0')
+      ).join('-');
+      materialRules.set(key, sortOrder);
+    };
+
+    ['shell', 'stone', 'fiber', 'iron', 'ice', 'wood']
+      .forEach((key, index) => {
+        register(key, [0, 0, 0, 0, index, 0]);
+      });
+
+    ['green', 'blue', 'pink', 'red']
+      .forEach((color, index) => {
+        register(`material:slime_gel:${color}`,
+          [0, 1, 0, 0, index, 0]);
+      });
+
+    ['green', 'blue', 'pink', 'red', 'king']
+      .forEach((color, index) => {
+        register(`material:boss_core:slime_${color}`,
+          [0, 1, 0, 1, index, 0]);
+        register(`material:boss_essence:slime_${color}`,
+          [0, 1, 0, 1, index, 1]);
+      });
+
+    const zodiacGroups = [
+      [
+        'aries', 'taurus', 'gemini', 'cancer',
+        'leo', 'virgo', 'libra', 'scorpio',
+        'sagittarius', 'capricorn', 'aquarius', 'pisces'
+      ],
+      [
+        'rat', 'ox', 'tiger', 'rabbit',
+        'dragon', 'snake', 'horse', 'goat',
+        'monkey', 'rooster', 'dog', 'pig'
+      ]
+    ];
+    zodiacGroups.forEach((names, groupIndex) => {
+      names.forEach((name, index) => {
+        register(`material:boss_core:zodiac_${name}`,
+          [0, 1, 1, groupIndex, index, 0]);
+        register(`material:zodiac_essence:${name}`,
+          [0, 1, 1, groupIndex, index, 1]);
+      });
+    });
+
+    [
+      'belfry_fang', 'mourning_veil',
+      'witchbound_straw', 'hollow_ember'
+    ].forEach((name, index) => {
+      register(`material:halloween:${name}`,
+        [0, 1, 2, 0, index, 0]);
+    });
+
+    const getMaterialOrder = node =>
+      materialRules.get(node.getAttribute('data-inventory-key'));
+
+    // 選択肢の追加は、このレジストリへ追加する。
+    // compare:null は公式順序を使用する。
+    const sortModes = new Map([
+      ['default', {
+        label:'デフォルト',
+        compare:null
+      }],
+      ['dba', {
+        label:'DBAソーティング',
+        compare:(a, b) => {
+          const orderA = getMaterialOrder(a);
+          const orderB = getMaterialOrder(b);
+          if(orderA == null && orderB == null) return 0;
+          if(orderA == null) return 1;
+          if(orderB == null) return -1;
+          return orderA < orderB ? -1 : orderA > orderB ? 1 : 0;
+        }
+      }]
+    ]);
+
+    const loadMode = () => {
+      const saved = dbaStorageGetItem(STORAGE_KEY);
+      return sortModes.has(saved) ? saved : 'default';
+    };
+
+    let selectedMode = loadMode();
+    let modal = null;
+    let scheduled = false;
+    const originalOrders = new WeakMap();
+
+    addStyle(`
+      #stackable-inventory-sort {
+        display:flex;
+        align-items:center;
+        flex-wrap:wrap;
+        flex:0 0 auto;
+        gap:8px 12px;
+        padding:10px 16px;
+        box-sizing:border-box;
+        border-bottom:1px solid rgba(148,163,184,.22);
+        background:rgba(148,163,184,.06);
+        color:inherit;
+        font-family:inherit;
+        font-size:.875rem;
+        line-height:1.5;
+      }
+      #stackable-inventory-sort label {
+        margin:0;
+        color:inherit;
+        font:inherit;
+        white-space:nowrap;
+      }
+      #dba-alpha-inventory-sort-select {
+        width:auto;
+        min-width:150px;
+        max-width:100%;
+        margin:0;
+        padding:6px 30px 6px 10px;
+        border:1px solid rgba(148,163,184,.4);
+        border-radius:8px;
+        background:var(--dba-inventory-select-bg, #172033);
+        color:var(--dba-inventory-select-color, #e2e8f0);
+        font:inherit;
+        line-height:1.5;
+        cursor:pointer;
+      }
+      #dba-alpha-inventory-sort-select:focus-visible {
+        outline:2px solid #60a5fa;
+        outline-offset:2px;
+      }
+      #dba-alpha-inventory-sort-select option {
+        background:var(--dba-inventory-select-bg, #172033);
+        color:var(--dba-inventory-select-color, #e2e8f0);
+      }
+    `);
+
+    // 現在の公式DOM順を保持する。
+    // DBAによる移動は監視を止めて行うため、この記録へ混入しない。
+    function recordOfficialMutations(records){
+      for(const record of records){
+        if(record.type !== 'childList') continue;
+        const original = originalOrders.get(record.target);
+        if(!original) continue;
+
+        for(const node of record.removedNodes){
+          const index = original.indexOf(node);
+          if(index >= 0) original.splice(index, 1);
+        }
+
+        const added = Array.from(record.addedNodes);
+        if(!added.length) continue;
+
+        // 同じ親内で公式側が移動した場合も、重複させない。
+        for(const node of added){
+          const index = original.indexOf(node);
+          if(index >= 0) original.splice(index, 1);
+        }
+
+        let insertAt = record.nextSibling
+          ? original.indexOf(record.nextSibling)
+          : -1;
+        if(insertAt < 0 && record.previousSibling){
+          const previousIndex = original.indexOf(record.previousSibling);
+          if(previousIndex >= 0) insertAt = previousIndex + 1;
+        }
+        if(insertAt < 0) insertAt = original.length;
+        original.splice(insertAt, 0, ...added);
+      }
+    }
+
+    function ensureControls(header, body){
+      const panel = header.parentElement;
+      if(!panel || body.parentElement !== panel) return;
+
+      let controls = panel.querySelector(`#${CONTROL_ID}`);
+      if(!controls){
+        controls = document.createElement('div');
+        controls.id = CONTROL_ID;
+
+        const label = document.createElement('label');
+        label.htmlFor = SELECT_ID;
+        label.textContent = '並び替え';
+
+        const select = document.createElement('select');
+        select.id = SELECT_ID;
+        for(const [value, mode] of sortModes){
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = mode.label;
+          select.appendChild(option);
+        }
+
+        select.addEventListener('change', () => {
+          selectedMode = sortModes.has(select.value)
+            ? select.value : 'default';
+          dbaStorageSetItem(STORAGE_KEY, selectedMode);
+          schedule();
+        });
+
+        controls.append(label, select);
+      }
+
+      // ヘッダー直後、Inventory本文より前へ配置する。
+      if(header.nextElementSibling !== controls){
+        header.insertAdjacentElement('afterend', controls);
+      }
+
+      const select = controls.querySelector(`#${SELECT_ID}`);
+      if(select && select.value !== selectedMode){
+        select.value = selectedMode;
+      }
+
+      // 公式パネルの実際の配色を選択欄へ反映する。
+      const panelStyle = getComputedStyle(panel);
+      const headerStyle = getComputedStyle(header);
+      controls.style.color = headerStyle.color;
+      controls.style.setProperty(
+        '--dba-inventory-select-color', headerStyle.color
+      );
+      const background = panelStyle.backgroundColor;
+      if(background && background !== 'transparent'
+        && background !== 'rgba(0, 0, 0, 0)'){
+        controls.style.setProperty(
+          '--dba-inventory-select-bg', background
+        );
+      }
+    }
+
+    function getMaterialGroups(body){
+      const headings = Array.from(body.querySelectorAll('h3'));
+      const headingIndex = headings.findIndex(heading =>
+        /^(素材|Materials)$/i.test(heading.textContent.trim())
+      );
+      if(headingIndex < 0) return new Map();
+
+      const start = headings[headingIndex];
+      const end = headings[headingIndex + 1] || null;
+      const isBefore = (a, b) =>
+        !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const groups = new Map();
+
+      for(const item of body.querySelectorAll('[data-inventory-key]')){
+        if(!isBefore(start, item)) continue;
+        if(end && !isBefore(item, end)) continue;
+
+        const key = item.getAttribute('data-inventory-key') || '';
+        if(!materialRules.has(key) && !key.startsWith('material:')){
+          continue;
+        }
+
+        const parent = item.parentNode;
+        if(!groups.has(parent)) groups.set(parent, new Set());
+        groups.get(parent).add(item);
+      }
+      return groups;
+    }
+
+    function applySort(body){
+      const mode = sortModes.get(selectedMode) || sortModes.get('default');
+      for(const [parent, items] of getMaterialGroups(body)){
+        let original = originalOrders.get(parent);
+        if(!original){
+          original = Array.from(parent.childNodes);
+          originalOrders.set(parent, original);
+        }
+
+        // 本文の再生成・素材の増減に対する整合性確認。
+        const current = Array.from(parent.childNodes);
+        const currentSet = new Set(current);
+        original = original.filter(node => currentSet.has(node));
+        const originalSet = new Set(original);
+        for(const node of current){
+          if(!originalSet.has(node)){
+            original.push(node);
+            originalSet.add(node);
+          }
+        }
+        originalOrders.set(parent, original);
+
+        const targets = original.filter(node => items.has(node));
+        const sorted = targets.map((node, index) => ({node, index}));
+        if(mode.compare){
+          sorted.sort((a, b) =>
+            mode.compare(a.node, b.node) || a.index - b.index
+          );
+        }
+
+        // 対象素材が占める位置だけを置き換える。
+        // 見出し・他カテゴリ・テキストノードは並び替え対象にしない。
+        let targetIndex = 0;
+        const desired = original.map(node =>
+          items.has(node) ? sorted[targetIndex++].node : node
+        );
+
+        let cursor = parent.firstChild;
+        for(const node of desired){
+          if(node === cursor){
+            cursor = cursor.nextSibling;
+          }else{
+            parent.insertBefore(node, cursor);
+          }
+        }
+      }
+    }
+
+    const observer = new MutationObserver(records => {
+      recordOfficialMutations(records);
+      if(!modal || !modal.isConnected){
+        if(document.getElementById(MODAL_ID)) schedule();
+        return;
+      }
+      if(records.some(record =>
+        record.target === modal || modal.contains(record.target)
+      )){
+        schedule();
+      }
+    });
+
+    function observe(){
+      observer.observe(document.documentElement, {
+        childList:true,
+        subtree:true,
+        attributes:true,
+        attributeFilter:['data-inventory-key']
+      });
+    }
+
+    function apply(){
+      // 直前に発生した公式更新も保存してから監視を止める。
+      recordOfficialMutations(observer.takeRecords());
+      observer.disconnect();
+      try{
+        modal = document.getElementById(MODAL_ID);
+        if(!modal) return;
+
+        const header = modal.querySelector('.stackable-inventory-header');
+        const body = modal.querySelector('[data-inventory-body]');
+        if(!header || !body) return;
+
+        ensureControls(header, body);
+        applySort(body);
+      }catch(error){
+        console.warn('[DBA] Inventory sort failed', error);
+      }finally{
+        observe();
+      }
+    }
+
+    function schedule(){
+      if(scheduled) return;
+      scheduled = true;
+      Promise.resolve().then(() => {
+        scheduled = false;
+        apply();
+      });
+    }
+
+    // 別タブで保存された選択は、このタブへの復帰時にも読み直す。
+    const reloadSelection = () => {
+      selectedMode = loadMode();
+      schedule();
+    };
+    window.addEventListener('focus', reloadSelection);
+    window.addEventListener('pageshow', reloadSelection);
+
+    if(document.documentElement){
+      observe();
+      schedule();
+    }else{
+      document.addEventListener('DOMContentLoaded', () => {
+        observe();
+        schedule();
+      }, {once:true});
+    }
+  }
+  // ------------------------------------------------------------
+  // △ここまで△ Inventory：並び替え
+  // ============================================================
+
   function injectWhenReady() {
     addStyle(CSS);
 
     if(isAlphaPage){
+      initAlphaInventorySort();
+
       window.addEventListener('wheel', handleAlphaRosterWheel, {
         capture: true,
         passive: false
